@@ -34,8 +34,13 @@ app.use(mongoSanitize());
 
 // CORS
 const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(",")
-  : ["http://localhost:5173", "http://localhost:3000"];
+  ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
+  : [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "https://hindumatha.me",
+      "https://www.hindumatha.me",
+    ];
 
 app.use(
   cors({
