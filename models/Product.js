@@ -119,6 +119,14 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    isEgg: {
+      type: Boolean,
+      default: true,
+    },
+    isEggless: {
+      type: Boolean,
+      default: false,
+    },
     isFeatured: {
       type: Boolean,
       default: false,

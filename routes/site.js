@@ -13,7 +13,9 @@ const {
   subscribePushAlerts,
   sendTestAlertEmail,
   unsubscribePushAlerts,
+  sendContactMessage,
 } = require("../controllers/siteController");
+const { strictAuthLimiter } = require("../middleware/rateLimiters");
 
 router.get("/", getSiteContent);
 router.get("/alerts/status", auth, isAdmin, getAlertStatus);
@@ -30,5 +32,6 @@ router.delete(
 );
 router.post("/gallery", auth, isAdmin, upload.single("image"), addGalleryItem);
 router.delete("/gallery/:itemId", auth, isAdmin, deleteGalleryItem);
+router.post("/contact", strictAuthLimiter, sendContactMessage);
 
 module.exports = router;

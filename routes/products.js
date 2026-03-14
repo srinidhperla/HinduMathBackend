@@ -20,6 +20,8 @@ const {
   updateProductInventory,
   deleteProduct,
   addReview,
+  renameCategory,
+  deleteCategory,
 } = require("../controllers/productController");
 
 // Public routes
@@ -36,6 +38,20 @@ router.post(
 );
 
 // Admin routes
+router.put(
+  "/batch/category",
+  auth,
+  isAdmin,
+  mediumOrderWriteLimiter,
+  renameCategory,
+);
+router.delete(
+  "/batch/category/:name",
+  auth,
+  isAdmin,
+  mediumOrderWriteLimiter,
+  deleteCategory,
+);
 router.post(
   "/",
   auth,

@@ -173,22 +173,74 @@ const normalizeFlavorWeightAvailability = (
         : {};
 
   const matrix = {};
-  flavorOptions.forEach((flavorOption) => {
-    const flavorName = flavorOption.name;
-    const lowerFlavor = flavorName.toLowerCase();
+
+  // Preserve typed keys (egg::*, eggless::*) for per-type availability
+  const getKeys = (obj) => {
+    if (obj instanceof Map) return Array.from(obj.keys());
+    if (obj && typeof obj === "object") return Object.keys(obj);
+    return [];
+  };
+  const allKeys = new Set([...getKeys(base), ...getKeys(fallback)]);
+  const normalizeStatus = (rawStatus) => {
+    if (rawStatus === null) return null;
+    if (rawStatus === false) return false;
+    return true;
+  };
+
+  const lookupStatus = (row, label) => {
+    if (label in row) return row[label];
+    const lower = label.toLowerCase();
+    if (lower in row) return row[lower];
+    return undefined;
+  };
+
+  allKeys.forEach((key) => {
+    if (!key.includes("::")) return;
     const sourceRow =
-      base[flavorName] ||
-      base[lowerFlavor] ||
-      base?.get?.(flavorName) ||
-      base?.get?.(lowerFlavor) ||
+      base[key] ||
+      base?.get?.(key) ||
+      fallback[key] ||
+      fallback?.get?.(key) ||
       {};
     const normalizedRow = {};
-
     weightOptions.forEach((weightOption) => {
-      const weightLabel = weightOption.label;
-      const lowerWeight = weightLabel.toLowerCase();
-      const rawStatus = sourceRow[weightLabel] ?? sourceRow[lowerWeight];
-      normalizedRow[weightLabel] = rawStatus !== false;
+      const rawStatus = lookupStatus(sourceRow, weightOption.label);
+      normalizedRow[weightOption.label] = normalizeStatus(rawStatus);
+    });
+    matrix[key] = normalizedRow;
+  });
+
+  // Build plain flavor keys by aggregating typed keys.
+  // A weight is available for a flavor if available in ANY egg type.
+  const effectiveFlavors =
+    flavorOptions.length > 0
+      ? flavorOptions
+      : [{ name: "Cake", isAvailable: true }];
+  effectiveFlavors.forEach((flavorOption) => {
+    const flavorName = flavorOption.name;
+    const typedKeys = ["egg", "eggless"]
+      .map((t) => `${t}::${flavorName}`)
+      .filter((k) => matrix[k]);
+
+    const normalizedRow = {};
+    weightOptions.forEach((weightOption) => {
+      const wl = weightOption.label;
+      if (typedKeys.length > 0) {
+        // Aggregate: available if ANY typed key has it available
+        const statuses = typedKeys.map((k) => matrix[k][wl]);
+        if (statuses.some((s) => s === true)) normalizedRow[wl] = true;
+        else if (statuses.some((s) => s === false)) normalizedRow[wl] = false;
+        else normalizedRow[wl] = null;
+      } else {
+        // Fallback to plain key source
+        const sourceRow =
+          base[flavorName] ||
+          base[flavorName.toLowerCase()] ||
+          base?.get?.(flavorName) ||
+          base?.get?.(flavorName.toLowerCase()) ||
+          {};
+        normalizedRow[wl] = normalizeStatus(lookupStatus(sourceRow, wl));
+      }
     });
 
     matrix[flavorName] = normalizedRow;
@@ -213,6 +265,8 @@ const normalizeProductPayload = (body) => {
     price: Number(body.price),
     category: body.category?.trim().toLowerCase(),
     isAvailable: parseBoolean(body.isAvailable, true),
+    isEgg: parseBoolean(body.isEgg, true),
+    isEggless: parseBoolean(body.isEggless, false),
     isFeatured: parseBoolean(body.isFeatured, false),
     flavors: flavorOptions.map((option) => option.name),
     flavorOptions,
@@ -258,6 +312,8 @@ const normalizeInventoryPayload = (body, existingProduct) => {
       body.isAvailable,
       existingProduct.isAvailable !== false,
     ),
+    isEgg: parseBoolean(body.isEgg, existingProduct.isEgg !== false),
+    isEggless: parseBoolean(body.isEggless, existingProduct.isEggless === true),
     flavors: flavorOptions.map((option) => option.name),
     flavorOptions,
     sizes: weightOptions.map((option) => option.label),
@@ -556,5 +612,55 @@ exports.addReview = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error adding review", error: error.message });
+  }
+};
+
+exports.renameCategory = async (req, res) => {
+  try {
+    const { oldName, newName } = req.body;
+    if (!oldName || !newName) {
+      return res
+        .status(400)
+        .json({ message: "oldName and newName are required" });
+    }
+    const trimmed = newName.trim().toLowerCase();
+    if (!trimmed) {
+      return res
+        .status(400)
+        .json({ message: "New category name cannot be empty" });
+    }
+    const result = await Product.updateMany(
+      { category: oldName.trim().toLowerCase() },
+      { $set: { category: trimmed } },
+    );
+    res.json({
+      message: "Category renamed",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Error renaming category", error: error.message });
+  }
+};
+
+exports.deleteCategory = async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!name) {
+      return res.status(400).json({ message: "Category name is required" });
+    }
+    const result = await Product.updateMany(
+      { category: name.trim().toLowerCase() },
+      { $set: { category: "cakes" } },
+    );
+    res.json({
+      message: "Category deleted, products moved to cakes",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Error deleting category", error: error.message });
   }
 };

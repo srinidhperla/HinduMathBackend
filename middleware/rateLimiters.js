@@ -15,12 +15,12 @@ const strictAuthLimiter = createLimiter(
 );
 
 const mediumOrderWriteLimiter = createLimiter(
-  1000,
+  10000000,
   "Too many order requests, please try again in a few minutes.",
 );
 
 const standardReadLimiter = createLimiter(
-  2000,
+  20000000,
   "Too many API requests, please slow down and retry.",
 );
 

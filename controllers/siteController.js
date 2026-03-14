@@ -8,6 +8,7 @@ const {
   subscribeAdminPush,
   unsubscribeAdminPush,
 } = require("../services/pushNotificationService");
+const { sendEmail } = require("../services/emailService");
 const { SITE_KEY } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
 
@@ -230,5 +231,50 @@ exports.sendTestAlertEmail = async (req, res) => {
       message: "Error sending test alert email",
       error: error.message,
     });
+  }
+};
+
+exports.sendContactMessage = async (req, res) => {
+  try {
+    const { name, email, phone, subject, message } = req.body;
+
+    if (!name || !email || !subject || !message) {
+      return res
+        .status(400)
+        .json({ message: "Name, email, subject, and message are required." });
+    }
+
+    const adminEmail =
+      process.env.ADMIN_CONTACT_EMAIL || "srinidhperla2004@gmail.com";
+
+    const result = await sendEmail({
+      to: adminEmail,
+      subject: `Contact Form: ${subject}`,
+      html: `
+        <h2>New Contact Message</h2>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Phone:</strong> ${phone || "Not provided"}</p>
+        <p><strong>Subject:</strong> ${subject}</p>
+        <hr />
+        <p>${message.replace(/\n/g, "<br />")}</p>
+      `,
+      replyTo: email,
+    });
+
+    if (result?.skipped) {
+      return res
+        .status(503)
+        .json({
+          message:
+            "Email service is not configured. Please contact us directly.",
+        });
+    }
+
+    res.json({ message: "Message sent successfully." });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Failed to send message. Please try again later." });
   }
 };
