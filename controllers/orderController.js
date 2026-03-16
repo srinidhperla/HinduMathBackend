@@ -72,7 +72,12 @@ const getWeightOptions = (product) => {
   }));
 };
 
-const isFlavorWeightAvailable = (product, flavorName, weightLabel) => {
+const isFlavorWeightAvailable = (
+  product,
+  flavorName,
+  weightLabel,
+  eggType = "",
+) => {
   if (!flavorName || !weightLabel) {
     return true;
   }
@@ -82,7 +87,14 @@ const isFlavorWeightAvailable = (product, flavorName, weightLabel) => {
     return true;
   }
 
+  const typedKey = eggType ? `${eggType}::${flavorName}` : "";
   const row =
+    (typedKey
+      ? (matrix[typedKey] ??
+        matrix[String(typedKey).toLowerCase()] ??
+        matrix?.get?.(typedKey) ??
+        matrix?.get?.(String(typedKey).toLowerCase()))
+      : null) ??
     matrix[flavorName] ??
     matrix[String(flavorName).toLowerCase()] ??
     matrix?.get?.(flavorName) ??
@@ -99,6 +111,65 @@ const isFlavorWeightAvailable = (product, flavorName, weightLabel) => {
     row?.get?.(String(weightLabel).toLowerCase());
 
   return value !== false;
+};
+
+const resolveFlavorForPricing = (product, flavorName = "") => {
+  if (flavorName) return flavorName;
+  const availableFlavor = getFlavorOptions(product).find(
+    (option) => option.isAvailable !== false,
+  );
+  return availableFlavor?.name || "Cake";
+};
+
+const getVariantPrice = (
+  product,
+  { flavorName = "", weightLabel = "", eggType = "" } = {},
+) => {
+  const weightOptions = getWeightOptions(product);
+  const selectedWeight = weightOptions.find(
+    (option) =>
+      option.label.toLowerCase() === String(weightLabel).toLowerCase(),
+  );
+
+  if (!selectedWeight) {
+    return Number(product?.price || 0);
+  }
+
+  const fallbackPrice =
+    Number(product?.price || 0) * Number(selectedWeight.multiplier || 1);
+
+  if (!eggType) {
+    return fallbackPrice;
+  }
+
+  const source = product?.variantPrices;
+  if (!source || typeof source !== "object") {
+    return fallbackPrice;
+  }
+
+  const resolvedFlavor = resolveFlavorForPricing(product, flavorName);
+  const typedKey = `${eggType}::${resolvedFlavor}`;
+  const row =
+    source[typedKey] ||
+    source?.get?.(typedKey) ||
+    source[String(typedKey).toLowerCase()] ||
+    source?.get?.(String(typedKey).toLowerCase());
+
+  if (!row || typeof row !== "object") {
+    return fallbackPrice;
+  }
+
+  const direct = Number(row[weightLabel]);
+  if (Number.isFinite(direct) && direct > 0) {
+    return direct;
+  }
+
+  const lower = Number(row[String(weightLabel).toLowerCase()]);
+  if (Number.isFinite(lower) && lower > 0) {
+    return lower;
+  }
+
+  return fallbackPrice;
 };
 
 const validateAndPriceOrder = async ({
@@ -145,6 +216,20 @@ const validateAndPriceOrder = async ({
 
     const flavorOptions = getFlavorOptions(product);
     const weightOptions = getWeightOptions(product);
+    const hasEgg = product.isEgg !== false;
+    const hasEggless = product.isEggless === true;
+    const requestedEggType =
+      item.eggType === "eggless" || item.eggType === "egg" ? item.eggType : "";
+    const resolvedEggType =
+      requestedEggType || (hasEggless && !hasEgg ? "eggless" : "egg");
+
+    if (resolvedEggType === "eggless" && !hasEggless) {
+      throw new Error(`${product.name} is not available in eggless type`);
+    }
+
+    if (resolvedEggType === "egg" && !hasEgg) {
+      throw new Error(`${product.name} is not available in egg type`);
+    }
 
     if (item.flavor) {
       const selectedFlavor = flavorOptions.find(
@@ -167,7 +252,14 @@ const validateAndPriceOrder = async ({
         throw new Error(`${item.size} is not available for ${product.name}`);
       }
 
-      if (!isFlavorWeightAvailable(product, item.flavor, item.size)) {
+      if (
+        !isFlavorWeightAvailable(
+          product,
+          item.flavor,
+          item.size,
+          resolvedEggType,
+        )
+      ) {
         throw new Error(
           `${item.flavor} (${item.size}) is not available for ${product.name}`,
         );
@@ -180,7 +272,13 @@ const validateAndPriceOrder = async ({
         )
       : null;
 
-    let itemPrice = product.price * (selectedWeight?.multiplier || 1);
+    let itemPrice = selectedWeight
+      ? getVariantPrice(product, {
+          flavorName: item.flavor,
+          weightLabel: selectedWeight.label,
+          eggType: resolvedEggType,
+        })
+      : Number(product.price || 0);
     if (item.customizations) {
       for (const customization of item.customizations) {
         const option = product.customization?.options?.find(
@@ -198,6 +296,7 @@ const validateAndPriceOrder = async ({
       quantity: Number(item.quantity),
       size: item.size || "",
       flavor: item.flavor || "",
+      eggType: resolvedEggType,
       customizations: item.customizations || [],
       price: itemPrice,
     });

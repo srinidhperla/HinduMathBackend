@@ -113,6 +113,13 @@ const parseObjectField = (value) => {
   }
 };
 
+const normalizePortionType = (value, fallback = "weight") => {
+  const normalized = String(value || fallback).toLowerCase();
+  return ["weight", "size", "pieces"].includes(normalized)
+    ? normalized
+    : "weight";
+};
+
 const normalizeFlavorOptions = (body) => {
   const flavorOptions = parseObjectArrayField(body.flavorOptions)
     .map((option) => ({
@@ -249,6 +256,187 @@ const normalizeFlavorWeightAvailability = (
   return matrix;
 };
 
+const normalizeVariantPrices = (rawValue, weightOptions, fallback = {}) => {
+  const base =
+    rawValue && typeof rawValue === "object"
+      ? rawValue
+      : fallback && typeof fallback === "object"
+        ? fallback
+        : {};
+
+  const matrix = {};
+  const getKeys = (obj) => {
+    if (obj instanceof Map) return Array.from(obj.keys());
+    if (obj && typeof obj === "object") return Object.keys(obj);
+    return [];
+  };
+
+  const allKeys = new Set([...getKeys(base), ...getKeys(fallback)]);
+
+  const readPrice = (row, label) => {
+    const direct = row?.[label];
+    const lower = row?.[String(label).toLowerCase()];
+    const value = direct ?? lower;
+    const numeric = Number(value?.price ?? value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+  };
+
+  allKeys.forEach((key) => {
+    if (!String(key).includes("::")) return;
+
+    const sourceRow =
+      base[key] ||
+      base?.get?.(key) ||
+      fallback[key] ||
+      fallback?.get?.(key) ||
+      {};
+
+    const normalizedRow = {};
+    weightOptions.forEach((weightOption) => {
+      normalizedRow[weightOption.label] = readPrice(
+        sourceRow,
+        weightOption.label,
+      );
+    });
+
+    matrix[key] = normalizedRow;
+  });
+
+  return matrix;
+};
+
+const getMinimumVariantPrice = (
+  variantPrices,
+  flavorWeightAvailability = {},
+  axes = {},
+) => {
+  if (!variantPrices || typeof variantPrices !== "object") {
+    return null;
+  }
+
+  const getRowEntries = (source) => {
+    if (source instanceof Map) {
+      return Array.from(source.entries());
+    }
+    return Object.entries(source || {});
+  };
+
+  const findRowByTypedKey = (source, typedKey) => {
+    if (!source || typeof source !== "object") return null;
+    const direct =
+      source?.[typedKey] ||
+      source?.get?.(typedKey) ||
+      source?.[String(typedKey).toLowerCase()] ||
+      source?.get?.(String(typedKey).toLowerCase());
+    if (direct && typeof direct === "object") {
+      return direct;
+    }
+
+    const typedKeyLower = String(typedKey).toLowerCase();
+    const entries =
+      source instanceof Map
+        ? Array.from(source.entries())
+        : Object.entries(source || {});
+    const matched = entries.find(
+      ([key]) => String(key).toLowerCase() === typedKeyLower,
+    );
+    return matched && typeof matched[1] === "object" ? matched[1] : null;
+  };
+
+  const readRowValue = (row, unitLabel) => {
+    if (!row || typeof row !== "object") return undefined;
+
+    const label = String(unitLabel || "").trim();
+    if (label in row) return row[label];
+
+    const lower = label.toLowerCase();
+    if (lower in row) return row[lower];
+
+    const entries = Object.entries(row || {});
+    const matched = entries.find(
+      ([key]) => String(key || "").trim().toLowerCase() === lower,
+    );
+    return matched ? matched[1] : undefined;
+  };
+
+  const getCellEnabled = (typedKey, unitLabel) => {
+    const row = findRowByTypedKey(flavorWeightAvailability, typedKey);
+
+    if (!row || typeof row !== "object") {
+      return true;
+    }
+
+    const value = readRowValue(row, unitLabel);
+
+    return value !== false && value !== null;
+  };
+
+  let minimum = null;
+  getRowEntries(variantPrices).forEach(([typedKey, row]) => {
+    if (
+      axes?.validTypedKeys instanceof Set &&
+      axes.validTypedKeys.size > 0 &&
+      !axes.validTypedKeys.has(typedKey) &&
+      !axes.validTypedKeys.has(String(typedKey).toLowerCase())
+    ) {
+      return;
+    }
+
+    if (!row || typeof row !== "object") return;
+    Object.entries(row).forEach(([unitLabel, value]) => {
+      const normalizedLabel = String(unitLabel || "").trim();
+      if (
+        axes?.validLabels instanceof Set &&
+        axes.validLabels.size > 0 &&
+        !axes.validLabels.has(normalizedLabel) &&
+        !axes.validLabels.has(normalizedLabel.toLowerCase())
+      ) {
+        return;
+      }
+      if (!getCellEnabled(typedKey, unitLabel)) return;
+      const numeric = Number(value?.price ?? value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return;
+      minimum = minimum === null ? numeric : Math.min(minimum, numeric);
+    });
+  });
+
+  return minimum;
+};
+
+const getVariantAxes = ({
+  flavorOptions = [],
+  weightOptions = [],
+  isEgg = true,
+  isEggless = false,
+}) => {
+  const validLabels = new Set();
+  weightOptions
+    .map((option) => option.label)
+    .filter(Boolean)
+    .forEach((label) => {
+      validLabels.add(String(label));
+      validLabels.add(String(label).toLowerCase());
+    });
+  const flavorNames =
+    flavorOptions.length > 0
+      ? flavorOptions.map((option) => option.name).filter(Boolean)
+      : ["Cake"];
+  const eggTypes = [isEgg ? "egg" : null, isEggless ? "eggless" : null].filter(
+    Boolean,
+  );
+  const validTypedKeys = new Set();
+
+  eggTypes.forEach((eggType) => {
+    flavorNames.forEach((flavorName) => {
+      const typedKey = `${eggType}::${flavorName}`;
+      validTypedKeys.add(typedKey);
+      validTypedKeys.add(typedKey.toLowerCase());
+    });
+  });
+
+  return { validLabels, validTypedKeys };
+};
+
 const normalizeProductPayload = (body) => {
   const flavorOptions = normalizeFlavorOptions(body);
   const weightOptions = normalizeWeightOptions(body);
@@ -258,21 +446,50 @@ const normalizeProductPayload = (body) => {
     flavorOptions,
     weightOptions,
   );
+  const variantPrices = normalizeVariantPrices(
+    parseObjectField(body.variantPrices),
+    weightOptions,
+  );
+  const isEgg = parseBoolean(body.isEgg, true);
+  const isEggless = parseBoolean(body.isEggless, false);
+  const axes = getVariantAxes({
+    flavorOptions,
+    weightOptions,
+    isEgg,
+    isEggless,
+  });
+  const minimumVariantPrice = getMinimumVariantPrice(
+    variantPrices,
+    flavorWeightAvailability,
+    axes,
+  );
+  const hasTypedVariantRows = Object.keys(variantPrices || {}).length > 0;
+  const basePrice = Number(body.price);
+  const normalizedBasePrice =
+    minimumVariantPrice !== null
+      ? minimumVariantPrice
+      : hasTypedVariantRows
+        ? 0
+      : Number.isFinite(basePrice) && basePrice > 0
+        ? basePrice
+        : 0;
 
   return {
     name: body.name?.trim(),
     description: body.description?.trim(),
-    price: Number(body.price),
+    price: normalizedBasePrice,
     category: body.category?.trim().toLowerCase(),
+    portionType: normalizePortionType(body.portionType),
     isAvailable: parseBoolean(body.isAvailable, true),
-    isEgg: parseBoolean(body.isEgg, true),
-    isEggless: parseBoolean(body.isEggless, false),
+    isEgg,
+    isEggless,
     isFeatured: parseBoolean(body.isFeatured, false),
     flavors: flavorOptions.map((option) => option.name),
     flavorOptions,
     sizes: weightOptions.map((option) => option.label),
     weightOptions,
     flavorWeightAvailability,
+    variantPrices,
     images: existingImages,
   };
 };
@@ -307,23 +524,58 @@ const normalizeInventoryPayload = (body, existingProduct) => {
           })
           .filter((option) => option.label);
 
+  const variantPrices = normalizeVariantPrices(
+    parseObjectField(body.variantPrices),
+    weightOptions,
+    existingProduct.variantPrices || {},
+  );
+  const isEgg = parseBoolean(body.isEgg, existingProduct.isEgg !== false);
+  const isEggless = parseBoolean(
+    body.isEggless,
+    existingProduct.isEggless === true,
+  );
+  const normalizedFlavorWeightAvailability = normalizeFlavorWeightAvailability(
+    parseObjectField(body.flavorWeightAvailability),
+    flavorOptions,
+    weightOptions,
+    existingProduct.flavorWeightAvailability || {},
+  );
+  const axes = getVariantAxes({
+    flavorOptions,
+    weightOptions,
+    isEgg,
+    isEggless,
+  });
+  const minimumVariantPrice = getMinimumVariantPrice(
+    variantPrices,
+    normalizedFlavorWeightAvailability,
+    axes,
+  );
+  const hasTypedVariantRows = Object.keys(variantPrices || {}).length > 0;
+
   return {
     isAvailable: parseBoolean(
       body.isAvailable,
       existingProduct.isAvailable !== false,
     ),
-    isEgg: parseBoolean(body.isEgg, existingProduct.isEgg !== false),
-    isEggless: parseBoolean(body.isEggless, existingProduct.isEggless === true),
+    portionType: normalizePortionType(
+      body.portionType,
+      existingProduct.portionType,
+    ),
+    isEgg,
+    isEggless,
     flavors: flavorOptions.map((option) => option.name),
     flavorOptions,
     sizes: weightOptions.map((option) => option.label),
     weightOptions,
-    flavorWeightAvailability: normalizeFlavorWeightAvailability(
-      parseObjectField(body.flavorWeightAvailability),
-      flavorOptions,
-      weightOptions,
-      existingProduct.flavorWeightAvailability || {},
-    ),
+    flavorWeightAvailability: normalizedFlavorWeightAvailability,
+    variantPrices,
+    price:
+      minimumVariantPrice !== null
+        ? minimumVariantPrice
+        : hasTypedVariantRows
+          ? 0
+          : Number(existingProduct.price) || 0,
   };
 };
 

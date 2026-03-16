@@ -17,6 +17,8 @@ const TEST_ADDRESS = {
   state: process.env.SMOKE_ADDRESS_STATE || "Andhra Pradesh",
   zipCode: process.env.SMOKE_ADDRESS_ZIP || "535002",
 };
+const TEST_ADDRESS_LAT = Number(process.env.SMOKE_ADDRESS_LAT || NaN);
+const TEST_ADDRESS_LNG = Number(process.env.SMOKE_ADDRESS_LNG || NaN);
 
 const logStep = (message) => {
   console.log(`\n[smoke] ${message}`);
@@ -88,6 +90,10 @@ const ensureCustomer = async () => {
   }
 };
 
+const hasExplicitFlavors = (product) =>
+  (Array.isArray(product?.flavorOptions) && product.flavorOptions.length > 0) ||
+  (Array.isArray(product?.flavors) && product.flavors.length > 0);
+
 const getFirstOrderableVariant = (product) => {
   const flavorOption =
     product.flavorOptions?.find((option) => option.isAvailable !== false)
@@ -101,9 +107,41 @@ const getFirstOrderableVariant = (product) => {
   const multiplier = weightOption?.multiplier || 1;
 
   return {
-    flavor: flavorOption,
+    flavor: hasExplicitFlavors(product) ? flavorOption : "",
     size,
     price: Number(product.price || 0) * multiplier,
+  };
+};
+
+const toOrderItem = (productId, variant, quantity) => ({
+  product: productId,
+  quantity,
+  size: variant.size,
+  ...(variant.flavor ? { flavor: variant.flavor } : {}),
+  price: variant.price,
+});
+
+const resolveDeliveryAddress = (siteContent) => {
+  const storeLat = Number(siteContent?.deliverySettings?.storeLocation?.lat);
+  const storeLng = Number(siteContent?.deliverySettings?.storeLocation?.lng);
+
+  const lat = Number.isFinite(TEST_ADDRESS_LAT)
+    ? TEST_ADDRESS_LAT
+    : Number.isFinite(storeLat)
+      ? storeLat + 0.005
+      : 18.1067;
+  const lng = Number.isFinite(TEST_ADDRESS_LNG)
+    ? TEST_ADDRESS_LNG
+    : Number.isFinite(storeLng)
+      ? storeLng + 0.005
+      : 83.3956;
+
+  return {
+    ...TEST_ADDRESS,
+    lat,
+    lng,
+    label: "QA Address",
+    formattedAddress: `${TEST_ADDRESS.street}, ${TEST_ADDRESS.city}`,
   };
 };
 
@@ -150,6 +188,7 @@ const main = async () => {
       storeHours: siteContent.storeHours,
       socialLinks: siteContent.socialLinks,
       coupons: updatedCoupons,
+      deliverySettings: siteContent.deliverySettings,
     },
   });
 
@@ -195,44 +234,57 @@ const main = async () => {
 
   logStep("Fetching product catalog");
   const products = await request("/products");
-  const product = products.find((item) => item.isAvailable !== false);
+  const availableProducts = products.filter(
+    (item) => item.isAvailable !== false,
+  );
+  const flavorProduct = availableProducts.find((item) =>
+    hasExplicitFlavors(item),
+  );
+  const noFlavorProduct = availableProducts.find(
+    (item) => !hasExplicitFlavors(item),
+  );
 
-  if (!product) {
-    fail("No available product found for smoke testing");
+  if (!flavorProduct) {
+    fail("No available product with flavors found for smoke testing");
   }
 
-  const variant = getFirstOrderableVariant(product);
+  if (!noFlavorProduct) {
+    fail("No available product without flavors found for smoke testing");
+  }
+
+  const flavorVariant = getFirstOrderableVariant(flavorProduct);
+  const noFlavorVariant = getFirstOrderableVariant(noFlavorProduct);
   const testCoupon = activeCoupons.find(
     (coupon) => coupon.code === TEST_COUPON_CODE,
   );
   const minimumSubtotal = Number(testCoupon?.minSubtotal || 0);
+  const pairPrice =
+    Number(flavorVariant.price || 0) + Number(noFlavorVariant.price || 0);
   const quantity = Math.max(
     1,
-    minimumSubtotal > 0 && variant.price > 0
-      ? Math.ceil(minimumSubtotal / variant.price)
+    minimumSubtotal > 0 && pairPrice > 0
+      ? Math.ceil(minimumSubtotal / pairPrice)
       : 1,
   );
-  const deliveryDate = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split("T")[0];
+  const deliveryDateTime = new Date(
+    Date.now() + 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const deliveryAddress = resolveDeliveryAddress(savedSiteContent);
 
-  logStep(`Creating a smoke-test order with coupon ${TEST_COUPON_CODE}`);
+  logStep(
+    `Creating a smoke-test order with flavored + no-flavor items using coupon ${TEST_COUPON_CODE}`,
+  );
   const order = await request("/orders", {
     method: "POST",
     token: customerToken,
     body: {
       items: [
-        {
-          product: product._id,
-          quantity,
-          size: variant.size,
-          flavor: variant.flavor,
-          price: variant.price,
-        },
+        toOrderItem(flavorProduct._id, flavorVariant, quantity),
+        toOrderItem(noFlavorProduct._id, noFlavorVariant, quantity),
       ],
-      deliveryAddress: TEST_ADDRESS,
-      deliveryDate,
-      deliveryTime: "12:00-15:00",
+      deliveryAddress,
+      deliveryMode: "scheduled",
+      deliveryDateTime,
       paymentMethod: "cash",
       couponCode: TEST_COUPON_CODE,
       specialInstructions: `Contact name: ${CUSTOMER_NAME} | Phone: ${CUSTOMER_PHONE}`,
@@ -259,17 +311,12 @@ const main = async () => {
       token: customerToken,
       body: {
         items: [
-          {
-            product: product._id,
-            quantity,
-            size: variant.size,
-            flavor: variant.flavor,
-            price: variant.price,
-          },
+          toOrderItem(flavorProduct._id, flavorVariant, quantity),
+          toOrderItem(noFlavorProduct._id, noFlavorVariant, quantity),
         ],
-        deliveryAddress: TEST_ADDRESS,
-        deliveryDate,
-        deliveryTime: "12:00-15:00",
+        deliveryAddress,
+        deliveryMode: "scheduled",
+        deliveryDateTime,
         paymentMethod: "cash",
         couponCode: "FREEDEL",
         specialInstructions: "Disabled coupon smoke test",
@@ -290,6 +337,8 @@ const main = async () => {
         api: BASE_API_URL,
         customerEmail: CUSTOMER_EMAIL,
         couponCode: TEST_COUPON_CODE,
+        flavorProductId: flavorProduct._id,
+        noFlavorProductId: noFlavorProduct._id,
         orderId: order._id,
         totalAmount: order.totalAmount,
       },

@@ -20,6 +20,11 @@ const orderSchema = new mongoose.Schema({
       },
       size: String,
       flavor: String,
+      eggType: {
+        type: String,
+        enum: ["egg", "eggless"],
+        default: "egg",
+      },
       customizations: [
         {
           name: String,

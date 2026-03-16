@@ -58,6 +58,11 @@ const productSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    portionType: {
+      type: String,
+      enum: ["weight", "size", "pieces"],
+      default: "weight",
+    },
     image: {
       type: String,
       required: true,
@@ -92,6 +97,11 @@ const productSchema = new mongoose.Schema(
       default: [],
     },
     flavorWeightAvailability: {
+      type: Map,
+      of: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    variantPrices: {
       type: Map,
       of: mongoose.Schema.Types.Mixed,
       default: {},
