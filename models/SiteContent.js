@@ -165,6 +165,24 @@ const siteContentSchema = new mongoose.Schema(
         type: Boolean,
         default: true,
       },
+      distanceFeeEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      pricePerKm: {
+        type: Number,
+        default: 20,
+        min: 0,
+      },
+      freeDeliveryEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      freeDeliveryMinAmount: {
+        type: Number,
+        default: 1500,
+        min: 0,
+      },
       maxDeliveryRadiusKm: {
         type: Number,
         default: 3,

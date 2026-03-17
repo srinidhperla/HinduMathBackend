@@ -52,11 +52,55 @@ const calculateDiscount = (coupon, subtotal, deliveryFee) => {
 const normalizeCouponCode = (couponCode = "") =>
   couponCode.trim().toUpperCase();
 
-const calculateOrderPricing = ({ subtotal = 0, couponCode = "", coupons }) => {
+const toNonNegativeNumber = (value, fallback = 0) => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0
+    ? numericValue
+    : fallback;
+};
+
+const resolveBaseDeliveryFee = ({
+  subtotal,
+  deliveryDistanceKm,
+  deliverySettings,
+}) => {
+  const normalizedSubtotal = toNonNegativeNumber(subtotal, 0);
+  const normalizedDistanceKm = toNonNegativeNumber(deliveryDistanceKm, 0);
+  const normalizedPricePerKm = toNonNegativeNumber(
+    deliverySettings?.pricePerKm,
+    20,
+  );
+  const freeDeliveryEnabled = deliverySettings?.freeDeliveryEnabled !== false;
+  const freeDeliveryMinAmount = toNonNegativeNumber(
+    deliverySettings?.freeDeliveryMinAmount,
+    FREE_DELIVERY_THRESHOLD,
+  );
+
+  if (freeDeliveryEnabled && normalizedSubtotal >= freeDeliveryMinAmount) {
+    return 0;
+  }
+
+  if (deliverySettings?.distanceFeeEnabled === false) {
+    return BASE_DELIVERY_FEE;
+  }
+
+  return Math.max(0, Math.round(normalizedDistanceKm * normalizedPricePerKm));
+};
+
+const calculateOrderPricing = ({
+  subtotal = 0,
+  couponCode = "",
+  coupons,
+  deliveryDistanceKm = 0,
+  deliverySettings = {},
+}) => {
   const normalizedSubtotal = Number(subtotal) || 0;
   const normalizedCouponCode = normalizeCouponCode(couponCode);
-  const baseDeliveryFee =
-    normalizedSubtotal >= FREE_DELIVERY_THRESHOLD ? 0 : BASE_DELIVERY_FEE;
+  const baseDeliveryFee = resolveBaseDeliveryFee({
+    subtotal: normalizedSubtotal,
+    deliveryDistanceKm,
+    deliverySettings,
+  });
   const couponCatalog = Object.fromEntries(
     Object.values(coupons || DEFAULT_COUPONS)
       .filter((coupon) => coupon && coupon.code)

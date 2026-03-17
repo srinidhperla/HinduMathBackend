@@ -14,8 +14,15 @@ const {
   calculateOrderPricing,
   normalizeCouponCode,
 } = require("../utils/orderPricing");
-const { normalizeDeliverySettings } = require("../utils/deliverySettings");
-const { isWithinDeliveryRadius } = require("../utils/distance");
+const {
+  getAvailableSlotsForDate,
+  getLeadTimeMinutes,
+  normalizeDeliverySettings,
+} = require("../utils/deliverySettings");
+const {
+  haversineDistance,
+  isWithinDeliveryRadius,
+} = require("../utils/distance");
 const { SITE_KEY, DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const {
   razorpayClient,
@@ -47,6 +54,101 @@ const resolveOrderErrorResponse = (error, fallbackMessage) => {
       error: message || fallbackMessage,
     },
   };
+};
+
+const toLocalDateKey = (dateValue) => {
+  const year = dateValue.getFullYear();
+  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
+  const day = String(dateValue.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const isDateTimeWithinSlot = (dateTime, dateKey, slot) => {
+  const [startHour, startMinute] = String(slot?.startTime || "00:00")
+    .split(":")
+    .map((value) => Number(value) || 0);
+  const [endHour, endMinute] = String(slot?.endTime || "00:00")
+    .split(":")
+    .map((value) => Number(value) || 0);
+
+  const slotStart = new Date(dateKey);
+  slotStart.setHours(startHour, startMinute, 0, 0);
+  const slotEnd = new Date(dateKey);
+  slotEnd.setHours(endHour, endMinute, 0, 0);
+
+  return dateTime >= slotStart && dateTime < slotEnd;
+};
+
+const toMinutes = (timeValue = "") => {
+  const [hours, minutes] = String(timeValue)
+    .split(":")
+    .map((value) => Number(value) || 0);
+  return hours * 60 + minutes;
+};
+
+const formatDisplayTime = (timeValue = "00:00") => {
+  const [hours, minutes] = String(timeValue)
+    .split(":")
+    .map((value) => Number(value) || 0);
+  const dateValue = new Date();
+  dateValue.setHours(hours, minutes, 0, 0);
+  return dateValue.toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
+const getDeliveryNowReason = (normalizedDeliverySettings, now = new Date()) => {
+  if (!normalizedDeliverySettings?.enabled) {
+    return "Delivery is currently turned off.";
+  }
+
+  if (normalizedDeliverySettings?.isPaused) {
+    return `Delivery is paused until ${new Date(normalizedDeliverySettings.pauseUntil).toLocaleString("en-IN")}.`;
+  }
+
+  const todayDateKey = toLocalDateKey(now);
+  const todayDayIndex = now.getDay();
+  const todayDayKey =
+    [
+      "sunday",
+      "monday",
+      "tuesday",
+      "wednesday",
+      "thursday",
+      "friday",
+      "saturday",
+    ][todayDayIndex] || "monday";
+  const daySchedule = normalizedDeliverySettings?.weeklySchedule?.[todayDayKey];
+
+  if (!daySchedule?.isOpen) {
+    return `Delivery is closed on ${todayDayKey}.`;
+  }
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const slots = (daySchedule.slots || [])
+    .map((slot) => ({
+      ...slot,
+      startMinutes: toMinutes(slot.startTime),
+      endMinutes: toMinutes(slot.endTime),
+    }))
+    .filter((slot) => slot.endMinutes > slot.startMinutes)
+    .sort((left, right) => left.startMinutes - right.startMinutes);
+
+  const isWithinCurrentWindow = slots.some(
+    (slot) => nowMinutes >= slot.startMinutes && nowMinutes < slot.endMinutes,
+  );
+
+  if (isWithinCurrentWindow) {
+    return "";
+  }
+
+  const nextWindow = slots.find((slot) => slot.startMinutes > nowMinutes);
+  if (nextWindow) {
+    return `Delivery opens today at ${formatDisplayTime(nextWindow.startTime)}.`;
+  }
+
+  return "Delivery is closed for today. Please schedule delivery.";
 };
 
 const getFlavorOptions = (product) => {
@@ -291,6 +393,16 @@ const validateAndPriceOrder = async ({
       }
     }
 
+    const submittedItemPrice = Number(item.price);
+    if (
+      Number.isFinite(submittedItemPrice) &&
+      Math.abs(submittedItemPrice - itemPrice) > 0.5
+    ) {
+      throw new Error(
+        `${product.name} price changed. Please review your cart and place the order again.`,
+      );
+    }
+
     validatedItems.push({
       product: product._id,
       quantity: Number(item.quantity),
@@ -311,12 +423,12 @@ const validateAndPriceOrder = async ({
     siteContent?.deliverySettings,
   );
 
-  if (!normalizedDeliverySettings.acceptingOrders) {
-    throw new Error("Delivery is currently unavailable");
+  if (!normalizedDeliverySettings.enabled) {
+    throw new Error("Delivery is currently turned off.");
   }
 
   const resolvedMode = deliveryMode === "scheduled" ? "scheduled" : "now";
-  const prepMinutes = Number(normalizedDeliverySettings.prepTimeMinutes || 45);
+  const leadTimeMinutes = getLeadTimeMinutes(normalizedDeliverySettings);
   let resolvedDeliveryDate = new Date();
   let resolvedDeliveryTime = "ASAP";
 
@@ -330,10 +442,34 @@ const validateAndPriceOrder = async ({
       throw new Error("Invalid delivery date and time");
     }
 
-    const earliestDateTime = new Date(Date.now() + prepMinutes * 60 * 1000);
+    const earliestDateTime = new Date(Date.now() + leadTimeMinutes * 60 * 1000);
     if (parsedDateTime < earliestDateTime) {
       throw new Error(
-        `Scheduled delivery should be at least ${prepMinutes} minutes from now`,
+        `Scheduled delivery should be at least ${leadTimeMinutes} minutes from now`,
+      );
+    }
+
+    const scheduledDateKey = toLocalDateKey(parsedDateTime);
+    const scheduledDaySlots = getAvailableSlotsForDate(
+      normalizedDeliverySettings,
+      scheduledDateKey,
+      new Date(),
+    );
+
+    if (!scheduledDaySlots.isAvailable) {
+      throw new Error(
+        scheduledDaySlots.reason ||
+          "No delivery slots are available for the selected date.",
+      );
+    }
+
+    const isWithinAnySlot = (scheduledDaySlots.slots || []).some((slot) =>
+      isDateTimeWithinSlot(parsedDateTime, scheduledDateKey, slot),
+    );
+
+    if (!isWithinAnySlot) {
+      throw new Error(
+        "Selected delivery time is outside the available delivery slots.",
       );
     }
 
@@ -343,6 +479,14 @@ const validateAndPriceOrder = async ({
       minute: "2-digit",
       hour12: true,
     });
+  } else {
+    const nowReason = getDeliveryNowReason(
+      normalizedDeliverySettings,
+      new Date(),
+    );
+    if (nowReason) {
+      throw new Error(nowReason);
+    }
   }
 
   const storeLocation = siteContent?.deliverySettings?.storeLocation;
@@ -362,6 +506,13 @@ const validateAndPriceOrder = async ({
     );
   }
 
+  const deliveryDistanceKm = haversineDistance(
+    Number(storeLocation?.lat),
+    Number(storeLocation?.lng),
+    deliveryLat,
+    deliveryLng,
+  );
+
   const activeCoupons = (siteContent?.coupons || []).filter(
     (coupon) => coupon.isActive !== false,
   );
@@ -370,6 +521,8 @@ const validateAndPriceOrder = async ({
     subtotal,
     couponCode,
     coupons: activeCoupons,
+    deliveryDistanceKm,
+    deliverySettings: normalizedDeliverySettings,
   });
 
   if (couponCode && pricing.couponError) {
