@@ -6,8 +6,10 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Generate JWT Token
 const generateToken = (userId) => {
+  const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "365d";
+
   return jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: "7d",
+    expiresIn: jwtExpiresIn,
   });
 };
 
@@ -15,9 +17,12 @@ const generateToken = (userId) => {
 exports.register = async (req, res) => {
   try {
     const { name, email, password, phone, address } = req.body;
+    const normalizedEmail = String(email || "")
+      .trim()
+      .toLowerCase();
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ message: "Email already registered" });
     }
@@ -25,7 +30,7 @@ exports.register = async (req, res) => {
     // Create new user
     const user = new User({
       name,
-      email,
+      email: normalizedEmail,
       password,
       phone,
       address,
@@ -60,9 +65,12 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
+    const normalizedEmail = String(email || "")
+      .trim()
+      .toLowerCase();
 
     // Find user
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials" });
     }

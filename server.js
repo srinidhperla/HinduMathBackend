@@ -21,7 +21,8 @@ const {
 const { setOrderEventSocketServer } = require("./services/orderEvents");
 
 // Load environment variables
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, ".env") });
+dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
 validateEnv();
 
 // Create Express app

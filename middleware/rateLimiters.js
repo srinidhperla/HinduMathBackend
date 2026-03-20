@@ -10,7 +10,7 @@ const createLimiter = (max, message) =>
   });
 
 const strictAuthLimiter = createLimiter(
-  10,
+  20,
   "Too many authentication attempts, please try again later.",
 );
 
