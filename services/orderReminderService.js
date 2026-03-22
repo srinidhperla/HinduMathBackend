@@ -14,9 +14,11 @@ const logger = require("../utils/logger");
 const REMINDER_INTERVAL_MS = 5 * 60 * 1000;
 const CHECK_INTERVAL_MS = 60 * 1000;
 const PUSH_RETRY_DELAYS_MS = [0, 20_000, 40_000, 60_000, 90_000];
+const PUSH_REPEAT_INTERVAL_MS = 60 * 1000;
 
 let reminderIntervalHandle = null;
 const retryTimeoutsByOrderId = new Map();
+const recurringPushIntervalsByOrderId = new Map();
 
 const getAdminReminderEmail = async () => {
   if (process.env.ADMIN_ALERT_EMAIL) {
@@ -103,6 +105,39 @@ const clearOrderReminderRetries = (orderId) => {
     clearTimeout(handle);
   }
   retryTimeoutsByOrderId.delete(key);
+
+  const intervalHandle = recurringPushIntervalsByOrderId.get(key);
+  if (intervalHandle) {
+    clearInterval(intervalHandle);
+    recurringPushIntervalsByOrderId.delete(key);
+  }
+};
+
+const ensureRecurringPendingPush = (orderId) => {
+  const key = String(orderId || "");
+  if (!key || recurringPushIntervalsByOrderId.has(key)) {
+    return;
+  }
+
+  const intervalHandle = setInterval(async () => {
+    try {
+      const order = await Order.findById(key).populate("user", "name");
+
+      if (!order || order.status !== "pending") {
+        clearOrderReminderRetries(key);
+        return;
+      }
+
+      await sendPendingReminderPush(order);
+    } catch (error) {
+      logger.error("Recurring pending push failed", {
+        orderId: key,
+        error: error.message,
+      });
+    }
+  }, PUSH_REPEAT_INTERVAL_MS);
+
+  recurringPushIntervalsByOrderId.set(key, intervalHandle);
 };
 
 const sendPendingReminderPushForOrder = async (
@@ -136,6 +171,10 @@ const schedulePendingOrderPushRetries = (orderId) => {
     setTimeout(async () => {
       try {
         await sendPendingReminderPushForOrder(key, { attempt: index + 1 });
+
+        if (index === PUSH_RETRY_DELAYS_MS.length - 1) {
+          ensureRecurringPendingPush(key);
+        }
       } catch (error) {
         logger.error("Pending order retry push failed", {
           orderId: key,
@@ -165,10 +204,6 @@ const sendPendingReminderForOrder = async (orderId, { force = false } = {}) => {
   if (!force && !shouldSendReminder(order)) {
     return { skipped: true, reason: "interval-not-reached" };
   }
-
-  await sendPendingReminderPush(order).catch((error) => {
-    logger.error("Pending order push failed", { error: error.message });
-  });
 
   if (!isEmailConfigured()) {
     return { skipped: true, reason: "smtp-not-configured" };
@@ -212,6 +247,19 @@ const startOrderReminderService = () => {
   if (reminderIntervalHandle) {
     return;
   }
+
+  Order.find({ status: "pending" })
+    .select("_id")
+    .then((pendingOrders) => {
+      for (const order of pendingOrders) {
+        schedulePendingOrderPushRetries(order._id);
+      }
+    })
+    .catch((error) => {
+      logger.error("Failed to restore pending push schedules", {
+        error: error.message,
+      });
+    });
 
   reminderIntervalHandle = setInterval(() => {
     processPendingOrderReminders().catch((error) => {
