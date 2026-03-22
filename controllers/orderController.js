@@ -1,6 +1,7 @@
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const SiteContent = require("../models/SiteContent");
+const Counter = require("../models/Counter");
 const crypto = require("crypto");
 const {
   emitOrderEvent,
@@ -32,6 +33,18 @@ const {
 const logger = require("../utils/logger");
 
 const ENFORCED_MAX_DELIVERY_RADIUS_KM = 4;
+const ORDER_SEQUENCE_KEY = "hm-order";
+
+const generateNextOrderCode = async () => {
+  const counter = await Counter.findByIdAndUpdate(
+    ORDER_SEQUENCE_KEY,
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true },
+  );
+
+  const sequence = Number(counter?.seq || 0);
+  return `HM${String(sequence).padStart(6, "0")}`;
+};
 
 const isConfiguredStoreLocation = (storeLocation) => {
   const lat = Number(storeLocation?.lat);
@@ -553,10 +566,12 @@ const createPersistedOrder = async ({
 }) => {
   const { validatedItems, pricing, orderFields } =
     await validateAndPriceOrder(orderData);
+  const orderCode = await generateNextOrderCode();
 
   const order = new Order({
     user: userId,
     items: validatedItems,
+    orderCode,
     subtotal: pricing.subtotal,
     deliveryFee: pricing.deliveryFee,
     discountAmount: pricing.discountAmount,

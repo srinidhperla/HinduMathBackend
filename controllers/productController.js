@@ -166,6 +166,32 @@ const normalizeWeightOptions = (body) => {
   }));
 };
 
+const normalizeAddOnOptions = (body, fallback = []) => {
+  const source =
+    body?.addOns !== undefined ? parseObjectArrayField(body.addOns) : fallback;
+
+  return source
+    .map((option) => {
+      const name = String(option?.name || "").trim();
+      const description = String(option?.description || "").trim();
+      const image = String(option?.image || "").trim();
+      const price = Number(option?.price);
+
+      if (!name || !Number.isFinite(price) || price < 0) {
+        return null;
+      }
+
+      return {
+        name,
+        description,
+        image,
+        price,
+        isAvailable: parseBoolean(option?.isAvailable, true),
+      };
+    })
+    .filter(Boolean);
+};
+
 const normalizeFlavorWeightAvailability = (
   rawValue,
   flavorOptions,
@@ -354,7 +380,10 @@ const getMinimumVariantPrice = (
 
     const entries = Object.entries(row || {});
     const matched = entries.find(
-      ([key]) => String(key || "").trim().toLowerCase() === lower,
+      ([key]) =>
+        String(key || "")
+          .trim()
+          .toLowerCase() === lower,
     );
     return matched ? matched[1] : undefined;
   };
@@ -470,9 +499,9 @@ const normalizeProductPayload = (body) => {
       ? minimumVariantPrice
       : hasTypedVariantRows
         ? 0
-      : Number.isFinite(basePrice) && basePrice > 0
-        ? basePrice
-        : 0;
+        : Number.isFinite(basePrice) && basePrice > 0
+          ? basePrice
+          : 0;
 
   return {
     name: body.name?.trim(),
@@ -481,9 +510,11 @@ const normalizeProductPayload = (body) => {
     category: body.category?.trim().toLowerCase(),
     portionType: normalizePortionType(body.portionType),
     isAvailable: parseBoolean(body.isAvailable, true),
+    isAddon: parseBoolean(body.isAddon, false),
     isEgg,
     isEggless,
     isFeatured: parseBoolean(body.isFeatured, false),
+    addOns: normalizeAddOnOptions(body),
     flavors: flavorOptions.map((option) => option.name),
     flavorOptions,
     sizes: weightOptions.map((option) => option.label),
@@ -558,12 +589,14 @@ const normalizeInventoryPayload = (body, existingProduct) => {
       body.isAvailable,
       existingProduct.isAvailable !== false,
     ),
+    isAddon: parseBoolean(body.isAddon, existingProduct.isAddon === true),
     portionType: normalizePortionType(
       body.portionType,
       existingProduct.portionType,
     ),
     isEgg,
     isEggless,
+    addOns: normalizeAddOnOptions(body, existingProduct.addOns || []),
     flavors: flavorOptions.map((option) => option.name),
     flavorOptions,
     sizes: weightOptions.map((option) => option.label),

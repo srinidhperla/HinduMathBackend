@@ -42,6 +42,13 @@ const orderSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
+  orderCode: {
+    type: String,
+    trim: true,
+    index: true,
+    unique: true,
+    sparse: true,
+  },
   subtotal: {
     type: Number,
     required: true,

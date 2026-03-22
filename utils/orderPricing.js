@@ -66,9 +66,17 @@ const resolveBaseDeliveryFee = ({
 }) => {
   const normalizedSubtotal = toNonNegativeNumber(subtotal, 0);
   const normalizedDistanceKm = toNonNegativeNumber(deliveryDistanceKm, 0);
-  const normalizedPricePerKm = toNonNegativeNumber(
+  const legacyPricePerKm = toNonNegativeNumber(
     deliverySettings?.pricePerKm,
     20,
+  );
+  const normalizedFirstKmFee = toNonNegativeNumber(
+    deliverySettings?.firstKmFee,
+    legacyPricePerKm,
+  );
+  const normalizedPricePerKmBeyondFirstKm = toNonNegativeNumber(
+    deliverySettings?.pricePerKmBeyondFirstKm,
+    legacyPricePerKm,
   );
   const freeDeliveryEnabled = deliverySettings?.freeDeliveryEnabled !== false;
   const freeDeliveryMinAmount = toNonNegativeNumber(
@@ -84,7 +92,21 @@ const resolveBaseDeliveryFee = ({
     return BASE_DELIVERY_FEE;
   }
 
-  return Math.max(0, Math.round(normalizedDistanceKm * normalizedPricePerKm));
+  if (normalizedDistanceKm <= 0) {
+    return 0;
+  }
+
+  if (normalizedDistanceKm <= 1) {
+    return Math.max(0, Math.round(normalizedFirstKmFee));
+  }
+
+  return Math.max(
+    0,
+    Math.round(
+      normalizedFirstKmFee +
+        (normalizedDistanceKm - 1) * normalizedPricePerKmBeyondFirstKm,
+    ),
+  );
 };
 
 const calculateOrderPricing = ({

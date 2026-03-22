@@ -36,6 +36,36 @@ const weightOptionSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const addOnOptionSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      trim: true,
+      required: true,
+    },
+    description: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    price: {
+      type: Number,
+      min: 0,
+      required: true,
+    },
+    image: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    isAvailable: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: false },
+);
+
 const productSchema = new mongoose.Schema(
   {
     name: {
@@ -119,6 +149,10 @@ const productSchema = new mongoose.Schema(
         },
       ],
     },
+    addOns: {
+      type: [addOnOptionSchema],
+      default: [],
+    },
     occasion: [
       {
         type: String,
@@ -128,6 +162,10 @@ const productSchema = new mongoose.Schema(
     isAvailable: {
       type: Boolean,
       default: true,
+    },
+    isAddon: {
+      type: Boolean,
+      default: false,
     },
     isEgg: {
       type: Boolean,
