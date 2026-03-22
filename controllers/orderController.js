@@ -32,6 +32,8 @@ const {
 } = require("../config/razorpay");
 const logger = require("../utils/logger");
 
+const DELIVERY_TIME_ZONE = "Asia/Kolkata";
+const IST_OFFSET_MINUTES = 330;
 const ORDER_SEQUENCE_KEY = "hm-order";
 
 const generateNextOrderCode = async () => {
@@ -110,6 +112,101 @@ const formatDisplayTime = (timeValue = "00:00") => {
   });
 };
 
+const getNowTimeParts = (
+  baseDate = new Date(),
+  timeZone = DELIVERY_TIME_ZONE,
+) => {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(baseDate);
+  const weekday =
+    parts.find((part) => part.type === "weekday")?.value?.toLowerCase() ||
+    "mon";
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || 0);
+  const minute = Number(
+    parts.find((part) => part.type === "minute")?.value || 0,
+  );
+
+  return { weekday, hour, minute };
+};
+
+const toDayKeyFromWeekday = (weekday = "mon") => {
+  const mapping = {
+    sun: "sunday",
+    mon: "monday",
+    tue: "tuesday",
+    wed: "wednesday",
+    thu: "thursday",
+    fri: "friday",
+    sat: "saturday",
+  };
+
+  return mapping[String(weekday).slice(0, 3).toLowerCase()] || "monday";
+};
+
+const createIstDateTime = (dateKey, timeValue = "00:00") => {
+  const [year, month, day] = String(dateKey || "")
+    .slice(0, 10)
+    .split("-")
+    .map((value) => Number(value));
+  const [hours, minutes] = String(timeValue || "00:00")
+    .split(":")
+    .map((value) => Number(value));
+
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hours) ||
+    !Number.isFinite(minutes)
+  ) {
+    return new Date(NaN);
+  }
+
+  const utcTimestamp =
+    Date.UTC(year, month - 1, day, hours, minutes) -
+    IST_OFFSET_MINUTES * 60 * 1000;
+  return new Date(utcTimestamp);
+};
+
+const parseScheduledDeliveryInput = (deliveryDateTime) => {
+  const match = String(deliveryDateTime || "")
+    .trim()
+    .match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, dateKey, hours, minutes] = match;
+  const parsedDate = createIstDateTime(dateKey, `${hours}:${minutes}`);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  return {
+    dateKey,
+    timeValue: `${hours}:${minutes}`,
+    date: parsedDate,
+  };
+};
+
+const isScheduledTimeInsideSlot = (timeValue, slot) => {
+  const candidateMinutes = toMinutes(timeValue);
+  const slotStartMinutes = toMinutes(slot?.startTime);
+  const slotEndMinutes = toMinutes(slot?.endTime);
+
+  return (
+    candidateMinutes >= slotStartMinutes && candidateMinutes < slotEndMinutes
+  );
+};
+
 const getDeliveryNowReason = (normalizedDeliverySettings, now = new Date()) => {
   if (!normalizedDeliverySettings?.enabled) {
     return "Delivery is currently turned off.";
@@ -119,25 +216,15 @@ const getDeliveryNowReason = (normalizedDeliverySettings, now = new Date()) => {
     return `Delivery is paused until ${new Date(normalizedDeliverySettings.pauseUntil).toLocaleString("en-IN")}.`;
   }
 
-  const todayDateKey = toLocalDateKey(now);
-  const todayDayIndex = now.getDay();
-  const todayDayKey =
-    [
-      "sunday",
-      "monday",
-      "tuesday",
-      "wednesday",
-      "thursday",
-      "friday",
-      "saturday",
-    ][todayDayIndex] || "monday";
+  const nowParts = getNowTimeParts(now);
+  const todayDayKey = toDayKeyFromWeekday(nowParts.weekday);
   const daySchedule = normalizedDeliverySettings?.weeklySchedule?.[todayDayKey];
 
   if (!daySchedule?.isOpen) {
     return `Delivery is closed on ${todayDayKey}.`;
   }
 
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
   const slots = (daySchedule.slots || [])
     .map((slot) => ({
       ...slot,
@@ -449,10 +536,12 @@ const validateAndPriceOrder = async ({
       throw new Error("Exact delivery date and time are required");
     }
 
-    const parsedDateTime = new Date(deliveryDateTime);
-    if (Number.isNaN(parsedDateTime.getTime())) {
+    const parsedInput = parseScheduledDeliveryInput(deliveryDateTime);
+    if (!parsedInput) {
       throw new Error("Invalid delivery date and time");
     }
+
+    const parsedDateTime = parsedInput.date;
 
     const earliestDateTime = new Date(Date.now() + leadTimeMinutes * 60 * 1000);
     if (parsedDateTime < earliestDateTime) {
@@ -461,7 +550,7 @@ const validateAndPriceOrder = async ({
       );
     }
 
-    const scheduledDateKey = toLocalDateKey(parsedDateTime);
+    const scheduledDateKey = parsedInput.dateKey;
     const scheduledDaySlots = getAvailableSlotsForDate(
       normalizedDeliverySettings,
       scheduledDateKey,
@@ -476,7 +565,7 @@ const validateAndPriceOrder = async ({
     }
 
     const isWithinAnySlot = (scheduledDaySlots.slots || []).some((slot) =>
-      isDateTimeWithinSlot(parsedDateTime, scheduledDateKey, slot),
+      isScheduledTimeInsideSlot(parsedInput.timeValue, slot),
     );
 
     if (!isWithinAnySlot) {
@@ -490,6 +579,7 @@ const validateAndPriceOrder = async ({
       hour: "2-digit",
       minute: "2-digit",
       hour12: true,
+      timeZone: DELIVERY_TIME_ZONE,
     });
   } else {
     const nowReason = getDeliveryNowReason(

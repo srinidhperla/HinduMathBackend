@@ -8,6 +8,9 @@ const DAY_KEYS = [
   "saturday",
 ];
 
+const DELIVERY_TIME_ZONE = "Asia/Kolkata";
+const IST_OFFSET_MINUTES = 330;
+
 const createDefaultSlot = (startTime = "09:00", endTime = "21:00") => ({
   startTime,
   endTime,
@@ -132,13 +135,44 @@ const getLeadTimeMinutes = (deliverySettings) => {
   );
 };
 
+const parseDateKey = (dateString) => {
+  const [year, month, day] = String(dateString || "")
+    .slice(0, 10)
+    .split("-")
+    .map((value) => Number(value));
+
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day)
+  ) {
+    return null;
+  }
+
+  return { year, month, day };
+};
+
 const parseSlotDateTime = (dateString, timeString) => {
+  const dateParts = parseDateKey(dateString);
+  if (!dateParts) {
+    return new Date(NaN);
+  }
+
   const [hours, minutes] = String(timeString || "00:00")
     .split(":")
     .map((value) => Number(value) || 0);
-  const dateValue = new Date(dateString);
-  dateValue.setHours(hours, minutes, 0, 0);
-  return dateValue;
+
+  const utcTimestamp =
+    Date.UTC(
+      dateParts.year,
+      dateParts.month - 1,
+      dateParts.day,
+      hours,
+      minutes,
+    ) -
+    IST_OFFSET_MINUTES * 60 * 1000;
+
+  return new Date(utcTimestamp);
 };
 
 const formatTimeHHMM = (dateValue) => {
@@ -153,15 +187,29 @@ const formatTimeHHMM = (dateValue) => {
 };
 
 const toLocalDateKey = (dateValue) => {
-  const year = dateValue.getFullYear();
-  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
-  const day = String(dateValue.getDate()).padStart(2, "0");
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DELIVERY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(dateValue);
+  const year = parts.find((part) => part.type === "year")?.value || "1970";
+  const month = parts.find((part) => part.type === "month")?.value || "01";
+  const day = parts.find((part) => part.type === "day")?.value || "01";
   return `${year}-${month}-${day}`;
 };
 
 const getDayKeyForDate = (dateString) => {
-  const dateValue = new Date(dateString);
-  return DAY_KEYS[dateValue.getDay()] || "monday";
+  const dateParts = parseDateKey(dateString);
+  if (!dateParts) {
+    return "monday";
+  }
+
+  const dayIndex = new Date(
+    Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day),
+  ).getUTCDay();
+  return DAY_KEYS[dayIndex] || "monday";
 };
 
 const getAvailableSlotsForDate = (
@@ -196,7 +244,7 @@ const getAvailableSlotsForDate = (
     if (selectedDateKey < pauseDateKey) {
       return {
         isAvailable: false,
-        reason: `Delivery is paused until ${pauseUntilDate.toLocaleString("en-IN")}.`,
+        reason: `Delivery is paused until ${pauseUntilDate.toLocaleString("en-IN", { timeZone: DELIVERY_TIME_ZONE })}.`,
         slots: [],
       };
     }
@@ -251,7 +299,7 @@ const getAvailableSlotsForDate = (
     if (pauseMinimumDateTime) {
       return {
         isAvailable: false,
-        reason: `Delivery is paused until ${pauseMinimumDateTime.toLocaleString("en-IN")}. Choose a time after resume.`,
+        reason: `Delivery is paused until ${pauseMinimumDateTime.toLocaleString("en-IN", { timeZone: DELIVERY_TIME_ZONE })}. Choose a time after resume.`,
         slots: [],
       };
     }
