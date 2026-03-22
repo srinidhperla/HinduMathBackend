@@ -5,13 +5,18 @@ const {
   isEmailConfigured,
   sendEmail,
 } = require("./emailService");
-const { sendPendingReminderPush } = require("./pushNotificationService");
+const {
+  sendNewOrderPush,
+  sendPendingReminderPush,
+} = require("./pushNotificationService");
 const { SITE_KEY } = require("../config/constants");
 const logger = require("../utils/logger");
 const REMINDER_INTERVAL_MS = 5 * 60 * 1000;
 const CHECK_INTERVAL_MS = 60 * 1000;
+const PUSH_RETRY_DELAYS_MS = [0, 20_000, 40_000, 60_000, 90_000];
 
 let reminderIntervalHandle = null;
+const retryTimeoutsByOrderId = new Map();
 
 const getAdminReminderEmail = async () => {
   if (process.env.ADMIN_ALERT_EMAIL) {
@@ -89,6 +94,63 @@ const shouldSendReminder = (order) => {
     Date.now() - new Date(order.lastReminderSentAt).getTime() >=
     REMINDER_INTERVAL_MS
   );
+};
+
+const clearOrderReminderRetries = (orderId) => {
+  const key = String(orderId || "");
+  const timeoutHandles = retryTimeoutsByOrderId.get(key) || [];
+  for (const handle of timeoutHandles) {
+    clearTimeout(handle);
+  }
+  retryTimeoutsByOrderId.delete(key);
+};
+
+const sendPendingReminderPushForOrder = async (
+  orderId,
+  { attempt = 1 } = {},
+) => {
+  const order = await Order.findById(orderId).populate("user", "name");
+
+  if (!order || order.status !== "pending") {
+    return { skipped: true, reason: "order-not-pending" };
+  }
+
+  if (Number(attempt) <= 1) {
+    await sendNewOrderPush(order);
+  } else {
+    await sendPendingReminderPush(order);
+  }
+
+  return { sent: true };
+};
+
+const schedulePendingOrderPushRetries = (orderId) => {
+  if (!orderId) {
+    return;
+  }
+
+  const key = String(orderId);
+  clearOrderReminderRetries(key);
+
+  const timeoutHandles = PUSH_RETRY_DELAYS_MS.map((delayMs, index) =>
+    setTimeout(async () => {
+      try {
+        await sendPendingReminderPushForOrder(key, { attempt: index + 1 });
+      } catch (error) {
+        logger.error("Pending order retry push failed", {
+          orderId: key,
+          attempt: index + 1,
+          error: error.message,
+        });
+      } finally {
+        if (index === PUSH_RETRY_DELAYS_MS.length - 1) {
+          retryTimeoutsByOrderId.delete(key);
+        }
+      }
+    }, delayMs),
+  );
+
+  retryTimeoutsByOrderId.set(key, timeoutHandles);
 };
 
 const sendPendingReminderForOrder = async (orderId, { force = false } = {}) => {
@@ -203,5 +265,8 @@ module.exports = {
   startOrderReminderService,
   sendTestReminderEmail,
   sendPendingReminderForOrder,
+  sendPendingReminderPushForOrder,
+  schedulePendingOrderPushRetries,
+  clearOrderReminderRetries,
   processPendingOrderReminders,
 };

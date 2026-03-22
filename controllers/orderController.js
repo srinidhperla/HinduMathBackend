@@ -7,9 +7,9 @@ const {
   emitOrderEvent,
   subscribeToOrderEvents,
 } = require("../services/orderEvents");
-const { sendNewOrderPush } = require("../services/pushNotificationService");
 const {
-  sendPendingReminderForOrder,
+  schedulePendingOrderPushRetries,
+  clearOrderReminderRetries,
 } = require("../services/orderReminderService");
 const {
   calculateOrderPricing,
@@ -425,11 +425,11 @@ const validateAndPriceOrder = async ({
       requestedEggType || (hasEggless && !hasEgg ? "eggless" : "egg");
 
     if (resolvedEggType === "eggless" && !hasEggless) {
-      throw new Error(`${product.name} is not available in eggless type`);
+      throw new Error(`${product.name} is not available in Eggless cake type`);
     }
 
     if (resolvedEggType === "egg" && !hasEgg) {
-      throw new Error(`${product.name} is not available in egg type`);
+      throw new Error(`${product.name} is not available in Egg cake type`);
     }
 
     if (item.flavor) {
@@ -688,9 +688,8 @@ const createPersistedOrder = async ({
     ],
     couponCode: orderFields.couponCode,
     specialInstructions: orderFields.specialInstructions,
-    // Pre-set lastReminderSentAt so the periodic cron does not race to send a
-    // second email before the async sendPendingReminderForOrder call below
-    // has a chance to update the field itself.
+    // Pre-set this so the 5-minute email reminder service doesn't race right
+    // after order creation while retry push attempts are running.
     lastReminderSentAt: new Date(),
   });
 
@@ -699,12 +698,7 @@ const createPersistedOrder = async ({
   await order.populate("user", "name email phone");
 
   emitOrderEvent("order-created", order.toObject());
-  sendNewOrderPush(order).catch((error) => {
-    logger.error("New order push failed", { error: error.message });
-  });
-  sendPendingReminderForOrder(order._id, { force: true }).catch((error) => {
-    logger.error("Immediate order reminder failed", { error: error.message });
-  });
+  schedulePendingOrderPushRetries(order._id);
 
   return order;
 };
@@ -881,6 +875,10 @@ exports.updateOrderStatus = async (req, res) => {
     order.status = status;
     await order.save();
 
+    if (status !== "pending") {
+      clearOrderReminderRetries(order._id);
+    }
+
     await order.populate("items.product");
     await order.populate("user", "name email phone");
 
@@ -1024,6 +1022,7 @@ exports.cancelOrder = async (req, res) => {
       order.paymentStatus = "failed";
     }
     await order.save();
+    clearOrderReminderRetries(order._id);
 
     await order.populate("items.product");
     await order.populate("user", "name email phone");

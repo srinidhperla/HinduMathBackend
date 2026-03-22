@@ -7,6 +7,8 @@ const {
   getPushStatus,
   subscribeAdminPush,
   unsubscribeAdminPush,
+  subscribeAdminFcm,
+  unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
 const { sendEmail } = require("../services/emailService");
 const { SITE_KEY } = require("../config/constants");
@@ -188,6 +190,36 @@ exports.unsubscribePushAlerts = async (req, res) => {
   }
 };
 
+exports.subscribeFcmAlerts = async (req, res) => {
+  try {
+    const result = await subscribeAdminFcm(
+      req.user._id,
+      req.body.token,
+      req.body.userAgent,
+    );
+    res.json(result);
+  } catch (error) {
+    const statusCode = /required|not found/i.test(error.message) ? 400 : 500;
+    res.status(statusCode).json({
+      message: "Error subscribing to FCM alerts",
+      error: error.message,
+    });
+  }
+};
+
+exports.unsubscribeFcmAlerts = async (req, res) => {
+  try {
+    const result = await unsubscribeAdminFcm(req.user._id, req.body.token);
+    res.json(result);
+  } catch (error) {
+    const statusCode = /required|not found/i.test(error.message) ? 400 : 500;
+    res.status(statusCode).json({
+      message: "Error unsubscribing from FCM alerts",
+      error: error.message,
+    });
+  }
+};
+
 exports.getPaymentStatus = async (req, res) => {
   try {
     const keyId = process.env.RAZORPAY_KEY_ID || "";
@@ -263,12 +295,9 @@ exports.sendContactMessage = async (req, res) => {
     });
 
     if (result?.skipped) {
-      return res
-        .status(503)
-        .json({
-          message:
-            "Email service is not configured. Please contact us directly.",
-        });
+      return res.status(503).json({
+        message: "Email service is not configured. Please contact us directly.",
+      });
     }
 
     res.json({ message: "Message sent successfully." });

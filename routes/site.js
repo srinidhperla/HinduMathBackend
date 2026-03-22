@@ -13,6 +13,8 @@ const {
   subscribePushAlerts,
   sendTestAlertEmail,
   unsubscribePushAlerts,
+  subscribeFcmAlerts,
+  unsubscribeFcmAlerts,
   sendContactMessage,
 } = require("../controllers/siteController");
 const { strictAuthLimiter } = require("../middleware/rateLimiters");
@@ -23,6 +25,7 @@ router.get("/alerts/push-status", auth, isAdmin, getPushAlertStatus);
 router.get("/payments/status", auth, isAdmin, getPaymentStatus);
 router.put("/settings", auth, isAdmin, updateSettings);
 router.post("/alerts/push-subscriptions", auth, isAdmin, subscribePushAlerts);
+router.post("/alerts/fcm-tokens", auth, isAdmin, subscribeFcmAlerts);
 router.post("/alerts/test-email", auth, isAdmin, sendTestAlertEmail);
 router.delete(
   "/alerts/push-subscriptions",
@@ -30,6 +33,7 @@ router.delete(
   isAdmin,
   unsubscribePushAlerts,
 );
+router.delete("/alerts/fcm-tokens", auth, isAdmin, unsubscribeFcmAlerts);
 router.post("/gallery", auth, isAdmin, upload.single("image"), addGalleryItem);
 router.delete("/gallery/:itemId", auth, isAdmin, deleteGalleryItem);
 router.post("/contact", strictAuthLimiter, sendContactMessage);

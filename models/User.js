@@ -114,6 +114,28 @@ const userSchema = new mongoose.Schema({
       },
     },
   ],
+  fcmTokens: [
+    {
+      token: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now,
+      },
+      lastSeenAt: {
+        type: Date,
+        default: Date.now,
+      },
+      userAgent: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+    },
+  ],
   createdAt: {
     type: Date,
     default: Date.now,
