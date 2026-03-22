@@ -32,7 +32,6 @@ const {
 } = require("../config/razorpay");
 const logger = require("../utils/logger");
 
-const ENFORCED_MAX_DELIVERY_RADIUS_KM = 4;
 const ORDER_SEQUENCE_KEY = "hm-order";
 
 const generateNextOrderCode = async () => {
@@ -503,7 +502,10 @@ const validateAndPriceOrder = async ({
   }
 
   const storeLocation = siteContent?.deliverySettings?.storeLocation;
-  const maxRadius = ENFORCED_MAX_DELIVERY_RADIUS_KM;
+  const maxRadius = Math.max(
+    0,
+    Number(normalizedDeliverySettings?.maxDeliveryRadiusKm) || 0,
+  );
 
   if (!isConfiguredStoreLocation(storeLocation)) {
     throw new Error(

@@ -103,6 +103,7 @@ const normalizeDeliverySettings = (settings = {}) => {
       settings?.freeDeliveryMinAmount,
       1500,
     ),
+    maxDeliveryRadiusKm: toNonNegativeNumber(settings?.maxDeliveryRadiusKm, 3),
     pauseUntil,
     pauseDurationUnit:
       settings?.pauseDurationUnit === "days" ? "days" : "hours",
