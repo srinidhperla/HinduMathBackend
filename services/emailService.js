@@ -1,11 +1,20 @@
 const nodemailer = require("nodemailer");
+const logger = require("../utils/logger");
 
 const parseBoolean = (value) =>
   ["true", "1", "yes", "on"].includes(String(value || "").toLowerCase());
 
+const getConfiguredPort = () => Number(process.env.SMTP_PORT || 587);
+
+const getConfiguredSecureMode = () => {
+  const port = getConfiguredPort();
+  const secureEnv = String(process.env.SMTP_SECURE || "").trim();
+  return secureEnv.length > 0 ? parseBoolean(process.env.SMTP_SECURE) : port === 465;
+};
+
 const getTransportOptions = () => {
   const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT || 587);
+  const port = getConfiguredPort();
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
@@ -13,14 +22,20 @@ const getTransportOptions = () => {
     return null;
   }
 
+  const secure = getConfiguredSecureMode();
+
   return {
     host,
     port,
-    secure: parseBoolean(process.env.SMTP_SECURE),
+    secure,
     auth: {
       user,
       pass,
     },
+    // Keep SMTP operations from hanging indefinitely in some hosted environments.
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 20000),
   };
 };
 
@@ -45,8 +60,11 @@ const isEmailConfigured = () => Boolean(getTransportOptions());
 const getEmailConfigurationStatus = () => ({
   configured: isEmailConfigured(),
   host: process.env.SMTP_HOST || "",
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: parseBoolean(process.env.SMTP_SECURE),
+  port: getConfiguredPort(),
+  secure: getConfiguredSecureMode(),
+  secureSource: String(process.env.SMTP_SECURE || "").trim().length
+    ? "env"
+    : "port-default",
   from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
 });
 
@@ -56,10 +74,22 @@ const sendEmail = async (mailOptions) => {
     return { skipped: true, reason: "smtp-not-configured" };
   }
 
-  return activeTransporter.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
-    ...mailOptions,
-  });
+  try {
+    return await activeTransporter.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      ...mailOptions,
+    });
+  } catch (error) {
+    logger.error("SMTP send failed", {
+      error: error.message,
+      host: process.env.SMTP_HOST || "",
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: getEmailConfigurationStatus().secure,
+      to: mailOptions?.to || "",
+      subject: mailOptions?.subject || "",
+    });
+    throw error;
+  }
 };
 
 module.exports = {

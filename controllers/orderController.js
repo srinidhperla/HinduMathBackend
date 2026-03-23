@@ -10,6 +10,7 @@ const {
 const {
   schedulePendingOrderPushRetries,
   clearOrderReminderRetries,
+  sendPendingReminderForOrder,
 } = require("../services/orderReminderService");
 const {
   calculateOrderPricing,
@@ -699,6 +700,13 @@ const createPersistedOrder = async ({
 
   emitOrderEvent("order-created", order.toObject());
   schedulePendingOrderPushRetries(order._id);
+  // Send an immediate admin email without blocking order placement.
+  sendPendingReminderForOrder(order._id, { force: true }).catch((error) => {
+    logger.error("Immediate pending order email failed", {
+      orderId: order._id,
+      error: error.message,
+    });
+  });
 
   return order;
 };
@@ -873,10 +881,15 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     order.status = status;
+    if (status === "pending") {
+      order.pendingReminderEscalatedAt = null;
+    }
     await order.save();
 
     if (status !== "pending") {
       clearOrderReminderRetries(order._id);
+    } else {
+      schedulePendingOrderPushRetries(order._id);
     }
 
     await order.populate("items.product");

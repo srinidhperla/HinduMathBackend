@@ -271,11 +271,21 @@ const sendFcmToAdmins = async ({
     const messagePayload = {
       message: {
         token,
+        // Keep Android push as high priority so screen-off delivery is less likely to be delayed.
+        android: {
+          priority: "high",
+          notification: {
+            sound: "default",
+          },
+        },
         notification: {
           title,
           body,
         },
         webpush: {
+          headers: {
+            Urgency: "high",
+          },
           notification: {
             title,
             body,
@@ -292,6 +302,7 @@ const sendFcmToAdmins = async ({
             title,
             body,
             url: url || "/admin/orders",
+            priority: "high",
             tag,
             requireInteraction: String(Boolean(requireInteraction)),
           },
@@ -427,10 +438,20 @@ const sendNewOrderPush = async (order) => {
 
 const sendPendingReminderPush = async (order) => {
   return sendPushToAdmins({
-    title: "Pending order still waiting",
-    body: `Order #${order._id.toString().slice(-6).toUpperCase()} is still pending acceptance.`,
+    title: "PENDING ORDER WAITING - Tap to open",
+    body: "PENDING ORDER WAITING - Tap to open",
     url: "/admin/orders",
     tag: `pending-${order._id}`,
+    requireInteraction: true,
+  });
+};
+
+const sendPendingEscalationPush = async (order) => {
+  return sendPushToAdmins({
+    title: "Order still pending - please check immediately",
+    body: "Order still pending - please check immediately",
+    url: "/admin/orders",
+    tag: `pending-escalation-${order._id}`,
     requireInteraction: true,
   });
 };
@@ -443,4 +464,5 @@ module.exports = {
   unsubscribeAdminFcm,
   sendNewOrderPush,
   sendPendingReminderPush,
+  sendPendingEscalationPush,
 };

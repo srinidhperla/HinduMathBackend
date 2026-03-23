@@ -6,29 +6,48 @@ const {
   sendEmail,
 } = require("./emailService");
 const {
-  sendNewOrderPush,
   sendPendingReminderPush,
+  sendPendingEscalationPush,
 } = require("./pushNotificationService");
 const { SITE_KEY } = require("../config/constants");
 const logger = require("../utils/logger");
 const REMINDER_INTERVAL_MS = 5 * 60 * 1000;
 const CHECK_INTERVAL_MS = 60 * 1000;
-const PUSH_RETRY_DELAYS_MS = [0, 20_000, 40_000, 60_000, 90_000];
-const PUSH_REPEAT_INTERVAL_MS = 60 * 1000;
+const PUSH_REPEAT_INTERVAL_MS = 30 * 1000;
+const PUSH_REPEAT_CAP_MS = 10 * 60 * 1000;
 
 let reminderIntervalHandle = null;
-const retryTimeoutsByOrderId = new Map();
 const recurringPushIntervalsByOrderId = new Map();
 
-const getAdminReminderEmail = async () => {
+const resolveAdminReminderEmail = async () => {
   if (process.env.ADMIN_ALERT_EMAIL) {
-    return process.env.ADMIN_ALERT_EMAIL;
+    return {
+      recipient: process.env.ADMIN_ALERT_EMAIL,
+      recipientSource: "ADMIN_ALERT_EMAIL",
+    };
+  }
+
+  if (process.env.SMTP_USER) {
+    return {
+      recipient: process.env.SMTP_USER,
+      recipientSource: "SMTP_USER",
+    };
   }
 
   const siteContent = await SiteContent.findOne({
     singletonKey: SITE_KEY,
   }).lean();
-  return siteContent?.businessInfo?.email || null;
+  const fallbackRecipient = siteContent?.businessInfo?.email || "";
+
+  return {
+    recipient: fallbackRecipient,
+    recipientSource: fallbackRecipient ? "siteContent.businessInfo.email" : "none",
+  };
+};
+
+const getAdminReminderEmail = async () => {
+  const { recipient } = await resolveAdminReminderEmail();
+  return recipient || null;
 };
 
 const buildReminderEmail = (order) => {
@@ -100,12 +119,6 @@ const shouldSendReminder = (order) => {
 
 const clearOrderReminderRetries = (orderId) => {
   const key = String(orderId || "");
-  const timeoutHandles = retryTimeoutsByOrderId.get(key) || [];
-  for (const handle of timeoutHandles) {
-    clearTimeout(handle);
-  }
-  retryTimeoutsByOrderId.delete(key);
-
   const intervalHandle = recurringPushIntervalsByOrderId.get(key);
   if (intervalHandle) {
     clearInterval(intervalHandle);
@@ -113,48 +126,49 @@ const clearOrderReminderRetries = (orderId) => {
   }
 };
 
-const ensureRecurringPendingPush = (orderId) => {
-  const key = String(orderId || "");
-  if (!key || recurringPushIntervalsByOrderId.has(key)) {
-    return;
-  }
+const getPendingStartedAt = (order) => {
+  const timeline = Array.isArray(order?.statusTimeline)
+    ? order.statusTimeline
+    : [];
+  const latestPendingEntry = [...timeline]
+    .reverse()
+    .find((entry) => entry?.status === "pending" && entry?.updatedAt);
 
-  const intervalHandle = setInterval(async () => {
-    try {
-      const order = await Order.findById(key).populate("user", "name");
-
-      if (!order || order.status !== "pending") {
-        clearOrderReminderRetries(key);
-        return;
-      }
-
-      await sendPendingReminderPush(order);
-    } catch (error) {
-      logger.error("Recurring pending push failed", {
-        orderId: key,
-        error: error.message,
-      });
-    }
-  }, PUSH_REPEAT_INTERVAL_MS);
-
-  recurringPushIntervalsByOrderId.set(key, intervalHandle);
+  return latestPendingEntry?.updatedAt
+    ? new Date(latestPendingEntry.updatedAt)
+    : new Date(order?.createdAt || Date.now());
 };
 
-const sendPendingReminderPushForOrder = async (
-  orderId,
-  { attempt = 1 } = {},
-) => {
-  const order = await Order.findById(orderId).populate("user", "name");
+const hasExceededPushCap = (order) => {
+  const pendingStartedAt = getPendingStartedAt(order);
+  if (Number.isNaN(pendingStartedAt.getTime())) {
+    return false;
+  }
+
+  return Date.now() - pendingStartedAt.getTime() >= PUSH_REPEAT_CAP_MS;
+};
+
+const sendPendingReminderPushForOrder = async (orderId) => {
+  const order = await Order.findById(orderId)
+    .populate("user", "name")
+    .select("status createdAt statusTimeline pendingReminderEscalatedAt user");
 
   if (!order || order.status !== "pending") {
     return { skipped: true, reason: "order-not-pending" };
   }
 
-  if (Number(attempt) <= 1) {
-    await sendNewOrderPush(order);
-  } else {
-    await sendPendingReminderPush(order);
+  if (order.pendingReminderEscalatedAt) {
+    return { skipped: true, reason: "cap-reached" };
   }
+
+  if (hasExceededPushCap(order)) {
+    await sendPendingEscalationPush(order);
+    order.pendingReminderEscalatedAt = new Date();
+    await order.save();
+    return { sent: true, escalated: true, reason: "cap-reached" };
+  }
+
+  await sendPendingReminderPush(order);
 
   return { sent: true };
 };
@@ -167,29 +181,29 @@ const schedulePendingOrderPushRetries = (orderId) => {
   const key = String(orderId);
   clearOrderReminderRetries(key);
 
-  const timeoutHandles = PUSH_RETRY_DELAYS_MS.map((delayMs, index) =>
-    setTimeout(async () => {
-      try {
-        await sendPendingReminderPushForOrder(key, { attempt: index + 1 });
+  sendPendingReminderPushForOrder(key).catch((error) => {
+    logger.error("Pending order push failed", {
+      orderId: key,
+      error: error.message,
+    });
+  });
 
-        if (index === PUSH_RETRY_DELAYS_MS.length - 1) {
-          ensureRecurringPendingPush(key);
-        }
-      } catch (error) {
-        logger.error("Pending order retry push failed", {
-          orderId: key,
-          attempt: index + 1,
-          error: error.message,
-        });
-      } finally {
-        if (index === PUSH_RETRY_DELAYS_MS.length - 1) {
-          retryTimeoutsByOrderId.delete(key);
-        }
+  const intervalHandle = setInterval(async () => {
+    try {
+      const result = await sendPendingReminderPushForOrder(key);
+
+      if (result?.skipped || result?.escalated) {
+        clearOrderReminderRetries(key);
       }
-    }, delayMs),
-  );
+    } catch (error) {
+      logger.error("Pending order repeat push failed", {
+        orderId: key,
+        error: error.message,
+      });
+    }
+  }, PUSH_REPEAT_INTERVAL_MS);
 
-  retryTimeoutsByOrderId.set(key, timeoutHandles);
+  recurringPushIntervalsByOrderId.set(key, intervalHandle);
 };
 
 const sendPendingReminderForOrder = async (orderId, { force = false } = {}) => {
@@ -248,7 +262,7 @@ const startOrderReminderService = () => {
     return;
   }
 
-  Order.find({ status: "pending" })
+  Order.find({ status: "pending", pendingReminderEscalatedAt: null })
     .select("_id")
     .then((pendingOrders) => {
       for (const order of pendingOrders) {
@@ -271,12 +285,13 @@ const startOrderReminderService = () => {
 };
 
 const getReminderStatus = async () => {
-  const recipient = await getAdminReminderEmail();
+  const { recipient, recipientSource } = await resolveAdminReminderEmail();
   const pendingOrderCount = await Order.countDocuments({ status: "pending" });
 
   return {
     ...getEmailConfigurationStatus(),
     recipient: recipient || "",
+    recipientSource,
     reminderIntervalMinutes: REMINDER_INTERVAL_MS / (60 * 1000),
     pendingOrderCount,
   };

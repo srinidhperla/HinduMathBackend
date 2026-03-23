@@ -178,6 +178,10 @@ const orderSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  pendingReminderEscalatedAt: {
+    type: Date,
+    default: null,
+  },
 });
 
 // Update the updatedAt timestamp before saving
