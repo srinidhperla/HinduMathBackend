@@ -311,7 +311,13 @@ exports.sendTestAlertEmail = async (req, res) => {
   } catch (error) {
     const smtpError = getSmtpErrorDetails(error);
     const emailStatus = await getReminderStatus().catch(() => null);
-    res.status(500).json({
+    const statusCode =
+      smtpError.code === "EAUTH" ||
+      smtpError.code === "ESOCKET" ||
+      smtpError.code === "ETIMEDOUT"
+        ? 503
+        : 500;
+    res.status(statusCode).json({
       message: smtpError.hint,
       error: error.message,
       code: smtpError.code,

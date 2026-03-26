@@ -83,13 +83,18 @@ const getSmtpErrorDetails = (error) => {
   const code = String(error?.code || "").trim();
   const responseCode = Number(error?.responseCode || 0) || undefined;
   const rawResponse = String(error?.response || "").trim();
+  const isRenderEnvironment = Boolean(
+    process.env.RENDER || process.env.RENDER_SERVICE_ID,
+  );
 
   let hint = "SMTP send failed. Check host, port, user, password, and Gmail App Password configuration.";
 
   if (code === "EAUTH" || responseCode === 535) {
     hint = "SMTP authentication failed. Use the Gmail App Password, not the regular Gmail password.";
   } else if (code === "ESOCKET" || code === "ETIMEDOUT") {
-    hint = "SMTP connection failed. Verify smtp.gmail.com, port 587, firewall rules, and TLS settings.";
+    hint = isRenderEnvironment
+      ? "SMTP connection failed. On Render, outbound SMTP on ports 25, 465, and 587 can be restricted depending on plan. Use an email API provider such as Resend, Brevo, or SendGrid, or move to a plan that supports your SMTP setup."
+      : "SMTP connection failed. Verify smtp.gmail.com, port 587, firewall rules, and TLS settings.";
   } else if (responseCode === 550 || responseCode === 553) {
     hint = "SMTP rejected the sender or recipient address. Verify SMTP_FROM, SMTP_USER, and target email addresses.";
   }
