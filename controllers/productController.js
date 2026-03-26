@@ -1,6 +1,7 @@
 const Product = require("../models/Product");
 const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
+const logger = require("../utils/logger");
 
 const saveImageFile = async (file) => {
   if (!file) {
@@ -519,6 +520,9 @@ const normalizeProductPayload = (body) => {
     flavorOptions,
     sizes: weightOptions.map((option) => option.label),
     weightOptions,
+    displayOrder: Number.isFinite(Number(body.displayOrder))
+      ? Math.max(0, Number(body.displayOrder))
+      : undefined,
     flavorWeightAvailability,
     variantPrices,
     images: existingImages,
@@ -634,6 +638,15 @@ const buildOrderedImages = ({ imageOrder, existingImages, newImageMap }) => {
     .filter(Boolean);
 };
 
+const getNextDisplayOrder = async (category) => {
+  const latestProduct = await Product.findOne({ category })
+    .sort({ displayOrder: -1, createdAt: -1 })
+    .select("displayOrder")
+    .lean();
+
+  return Math.max(0, Number(latestProduct?.displayOrder) || 0) + 1;
+};
+
 // Get all products with optional filtering
 exports.getAllProducts = async (req, res) => {
   try {
@@ -643,8 +656,8 @@ exports.getAllProducts = async (req, res) => {
       minPrice,
       maxPrice,
       search,
-      sortBy = "createdAt",
-      sortOrder = "desc",
+      sortBy,
+      sortOrder = "asc",
     } = req.query;
 
     let query = {};
@@ -662,8 +675,12 @@ exports.getAllProducts = async (req, res) => {
     }
 
     // Apply sorting
-    const sort = {};
-    sort[sortBy] = sortOrder === "desc" ? -1 : 1;
+    const normalizedSortBy = String(sortBy || "").trim();
+    const normalizedSortOrder = sortOrder === "desc" ? -1 : 1;
+    const sort =
+      normalizedSortBy.length > 0
+        ? { [normalizedSortBy]: normalizedSortOrder }
+        : { category: 1, displayOrder: 1, name: 1, createdAt: -1 };
 
     const products = await Product.find(query)
       .sort(sort)
@@ -724,6 +741,8 @@ exports.createProduct = async (req, res) => {
       newImageMap,
     });
     payload.image = payload.images[0];
+    payload.displayOrder =
+      payload.displayOrder ?? (await getNextDisplayOrder(payload.category));
 
     const product = new Product(payload);
     await product.save();
@@ -791,6 +810,9 @@ exports.updateProduct = async (req, res) => {
     await deleteImageFiles(removedImages);
 
     payload.image = payload.images[0] || existingProduct.image;
+    if (payload.displayOrder === undefined) {
+      delete payload.displayOrder;
+    }
 
     const product = await Product.findByIdAndUpdate(
       req.params.id,
@@ -827,6 +849,63 @@ exports.updateProductInventory = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       message: "Error updating product inventory",
+      error: error.message,
+    });
+  }
+};
+
+exports.updateProductDisplayOrder = async (req, res) => {
+  try {
+    const { category, productIds } = req.body || {};
+    const normalizedCategory = String(category || "")
+      .trim()
+      .toLowerCase();
+
+    if (!normalizedCategory || !Array.isArray(productIds) || !productIds.length) {
+      return res.status(400).json({
+        message: "category and ordered productIds are required",
+      });
+    }
+
+    const uniqueIds = [...new Set(productIds.map((id) => String(id)))];
+    const products = await Product.find({
+      _id: { $in: uniqueIds },
+      category: normalizedCategory,
+    })
+      .select("_id category")
+      .lean();
+
+    if (products.length !== uniqueIds.length) {
+      return res.status(400).json({
+        message: "Some products could not be found in the selected category",
+      });
+    }
+
+    await Promise.all(
+      uniqueIds.map((productId, index) =>
+        Product.updateOne(
+          { _id: productId, category: normalizedCategory },
+          { $set: { displayOrder: index + 1 } },
+        ),
+      ),
+    );
+
+    const updatedProducts = await Product.find({ category: normalizedCategory })
+      .sort({ displayOrder: 1, name: 1 })
+      .lean();
+
+    return res.json({
+      message: "Product order updated successfully",
+      category: normalizedCategory,
+      products: updatedProducts,
+    });
+  } catch (error) {
+    logger.error("Failed to update product display order", {
+      error: error.message,
+      body: req.body,
+    });
+    return res.status(500).json({
+      message: "Error updating product display order",
       error: error.message,
     });
   }

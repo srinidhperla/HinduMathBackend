@@ -7,6 +7,11 @@ const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const path = require("path");
 const { Server } = require("socket.io");
+
+// Load environment variables before importing app modules that read process.env
+dotenv.config({ path: path.resolve(__dirname, ".env") });
+dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+
 const connectDB = require("./config/database");
 const { validateEnv } = require("./config/env");
 const { standardReadLimiter } = require("./middleware/rateLimiters");
@@ -20,9 +25,6 @@ const {
 } = require("./services/orderReminderService");
 const { setOrderEventSocketServer } = require("./services/orderEvents");
 
-// Load environment variables
-dotenv.config({ path: path.resolve(__dirname, ".env") });
-dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
 validateEnv();
 
 // Create Express app
@@ -77,8 +79,8 @@ io.use(async (socket, next) => {
       .select("_id role name")
       .lean();
 
-    if (!user || user.role !== "admin") {
-      return next(new Error("Admin access required"));
+    if (!user) {
+      return next(new Error("Authentication required"));
     }
 
     socket.data.user = user;
@@ -89,9 +91,23 @@ io.use(async (socket, next) => {
 });
 
 io.on("connection", (socket) => {
-  socket.join("admin-orders");
+  const user = socket.data?.user;
+
+  if (user?.role === "admin") {
+    socket.join("admin-orders");
+  }
+
+  if (user?._id) {
+    socket.join(`user-orders:${user._id}`);
+  }
+
+  if (user?.role === "delivery" && user?._id) {
+    socket.join(`delivery-orders:${user._id}`);
+  }
+
   socket.emit("connected", {
     ok: true,
+    role: user?.role || "user",
     timestamp: new Date().toISOString(),
   });
 });
@@ -108,6 +124,16 @@ app.use("/uploads", express.static(path.join(__dirname, "public", "uploads")));
 
 // Apply rate limiting
 app.use("/api", standardReadLimiter);
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    onlinePaymentsConfigured: Boolean(
+      (process.env.RAZORPAY_KEY || process.env.RAZORPAY_KEY_ID) &&
+        process.env.RAZORPAY_KEY_SECRET,
+    ),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Routes
 app.use("/api", routes);

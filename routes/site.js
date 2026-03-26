@@ -5,6 +5,7 @@ const upload = require("../middleware/upload");
 const {
   getSiteContent,
   updateSettings,
+  updateCategoryOrder,
   addGalleryItem,
   deleteGalleryItem,
   getAlertStatus,
@@ -24,6 +25,7 @@ router.get("/alerts/status", auth, isAdmin, getAlertStatus);
 router.get("/alerts/push-status", auth, isAdmin, getPushAlertStatus);
 router.get("/payments/status", auth, isAdmin, getPaymentStatus);
 router.put("/settings", auth, isAdmin, updateSettings);
+router.put("/category-order", auth, isAdmin, updateCategoryOrder);
 router.post("/alerts/push-subscriptions", auth, isAdmin, subscribePushAlerts);
 router.post("/alerts/fcm-tokens", auth, isAdmin, subscribeFcmAlerts);
 router.post("/alerts/test-email", auth, isAdmin, sendTestAlertEmail);

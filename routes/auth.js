@@ -7,7 +7,7 @@ const {
   validateLogin,
   validateGoogleLogin,
   validateProfileUpdate,
-} = require("../src/validators/authValidator");
+} = require("../validators/authValidator");
 const {
   register,
   login,

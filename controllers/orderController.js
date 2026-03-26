@@ -2,6 +2,7 @@ const Order = require("../models/Order");
 const Product = require("../models/Product");
 const SiteContent = require("../models/SiteContent");
 const Counter = require("../models/Counter");
+const User = require("../models/User");
 const crypto = require("crypto");
 const {
   emitOrderEvent,
@@ -31,11 +32,27 @@ const {
   RAZORPAY_KEY_ID,
   RAZORPAY_KEY_SECRET,
 } = require("../config/razorpay");
+const { sendEmail } = require("../services/emailService");
 const logger = require("../utils/logger");
 
 const DELIVERY_TIME_ZONE = "Asia/Kolkata";
 const IST_OFFSET_MINUTES = 330;
 const ORDER_SEQUENCE_KEY = "hm-order";
+const ESTIMATED_DELIVERY_LABELS = {
+  "15min": "15 minutes",
+  "30min": "30 minutes",
+  "45min": "45 minutes",
+  "1hour": "1 hour",
+  "1.5hours": "1.5 hours",
+  "2hours": "2 hours",
+  custom: "Custom",
+};
+const REJECTION_REASON_LABELS = {
+  outOfStock: "Out of stock",
+  tooFar: "Too far from delivery area",
+  shopClosed: "Shop closed",
+  other: "Other",
+};
 
 const generateNextOrderCode = async () => {
   const counter = await Counter.findByIdAndUpdate(
@@ -71,11 +88,36 @@ const resolveOrderErrorResponse = (error, fallbackMessage) => {
   };
 };
 
-const toLocalDateKey = (dateValue) => {
-  const year = dateValue.getFullYear();
-  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
-  const day = String(dateValue.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+const toLocalDateKey = (dateValue, timeZone = DELIVERY_TIME_ZONE) => {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  return formatter.format(new Date(dateValue));
+};
+
+const getLastNDates = (days) => {
+  const dates = [];
+  const now = new Date();
+
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const dateValue = new Date(now);
+    dateValue.setDate(now.getDate() - index);
+    const key = toLocalDateKey(dateValue);
+    dates.push({
+      key,
+      label: dateValue.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        timeZone: DELIVERY_TIME_ZONE,
+      }),
+    });
+  }
+
+  return dates;
 };
 
 const isDateTimeWithinSlot = (dateTime, dateKey, slot) => {
@@ -110,6 +152,184 @@ const formatDisplayTime = (timeValue = "00:00") => {
   return dateValue.toLocaleTimeString("en-IN", {
     hour: "numeric",
     minute: "2-digit",
+  });
+};
+
+const formatDateTimeLabel = (dateValue, fallbackTime = "") => {
+  const parsedDate = new Date(dateValue);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return fallbackTime || "Not specified";
+  }
+
+  const dateLabel = parsedDate.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: DELIVERY_TIME_ZONE,
+  });
+  const timeLabel =
+    fallbackTime ||
+    parsedDate.toLocaleTimeString("en-IN", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: DELIVERY_TIME_ZONE,
+    });
+
+  return `${dateLabel} at ${timeLabel}`;
+};
+
+const getRequestedDeliveryLabel = (order) => {
+  if (order?.deliveryMode === "now") {
+    return "Deliver now";
+  }
+
+  return formatDateTimeLabel(order?.deliveryDate, order?.deliveryTime);
+};
+
+const getEstimatedDeliveryLabel = (order) => {
+  const key = String(order?.estimatedDeliveryTime || "").trim();
+
+  if (!key) {
+    return "";
+  }
+
+  if (key === "custom") {
+    return String(order?.customDeliveryTime || "").trim();
+  }
+
+  return ESTIMATED_DELIVERY_LABELS[key] || key;
+};
+
+const formatAddressLabel = (address = {}) =>
+  [
+    address.street,
+    address.landmark,
+    address.city,
+    address.state,
+    address.zipCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+const buildOrderItemSummary = (order) =>
+  (order?.items || [])
+    .map((item) => {
+      const parts = [
+        item.product?.name || "Product",
+        `Qty ${Number(item.quantity) || 0}`,
+      ];
+      if (item.size) {
+        parts.push(item.size);
+      }
+      if (item.flavor) {
+        parts.push(item.flavor);
+      }
+      return `- ${parts.join(" | ")}`;
+    })
+    .join("\n");
+
+const sendCustomerEmailSafely = async ({ to, subject, text, html, context }) => {
+  if (!String(to || "").trim()) {
+    return { skipped: true, reason: "recipient-missing" };
+  }
+
+  try {
+    return await sendEmail({ to, subject, text, html });
+  } catch (error) {
+    logger.error("Customer order email failed", {
+      ...context,
+      to,
+      subject,
+      error: error.message,
+    });
+    return { skipped: true, reason: "send-failed" };
+  }
+};
+
+const sendOrderPlacedEmail = async (order) => {
+  const itemSummary = buildOrderItemSummary(order);
+  const requestedDelivery = getRequestedDeliveryLabel(order);
+  const customerEmail = order?.user?.email;
+
+  return sendCustomerEmailSafely({
+    to: customerEmail,
+    subject: `We received your order ${order.orderCode || order._id}`,
+    text: [
+      `Hi ${order.user?.name || "Customer"},`,
+      "",
+      "Your order has been placed successfully and is waiting for bakery confirmation.",
+      `Order ID: ${order.orderCode || order._id}`,
+      `Requested delivery: ${requestedDelivery}`,
+      `Delivery address: ${formatAddressLabel(order.deliveryAddress)}`,
+      `Total amount: Rs.${Number(order.totalAmount || 0).toLocaleString("en-IN")}`,
+      "",
+      "Items:",
+      itemSummary || "- No items found",
+      "",
+      "We will notify you as soon as the bakery accepts or rejects the order.",
+    ].join("\n"),
+    context: {
+      orderId: String(order?._id || ""),
+      event: "order-placed",
+    },
+  });
+};
+
+const sendOrderAcceptedEmail = async (order) => {
+  const estimatedLabel = getEstimatedDeliveryLabel(order) || "Will be shared soon";
+  const requestedDelivery = getRequestedDeliveryLabel(order);
+  const adminMessage = String(order?.acceptanceMessage || "").trim();
+
+  return sendCustomerEmailSafely({
+    to: order?.user?.email,
+    subject: `Your order ${order.orderCode || order._id} is confirmed`,
+    text: [
+      `Hi ${order.user?.name || "Customer"},`,
+      "",
+      "Your order has been accepted by the bakery.",
+      `Order ID: ${order.orderCode || order._id}`,
+      `Requested delivery: ${requestedDelivery}`,
+      `Estimated delivery time: ${estimatedLabel}`,
+      adminMessage ? `Message from bakery: ${adminMessage}` : "",
+      "",
+      "Thank you for ordering with Hindumatha's Cake World.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    context: {
+      orderId: String(order?._id || ""),
+      event: "order-accepted",
+    },
+  });
+};
+
+const sendOrderRejectedEmail = async (order) => {
+  const rejectionReason =
+    REJECTION_REASON_LABELS[order?.rejectionReason] ||
+    String(order?.rejectionReason || "Order unavailable");
+
+  return sendCustomerEmailSafely({
+    to: order?.user?.email,
+    subject: `Your order ${order.orderCode || order._id} was rejected`,
+    text: [
+      `Hi ${order.user?.name || "Customer"},`,
+      "",
+      "We are sorry, but the bakery could not accept your order.",
+      `Order ID: ${order.orderCode || order._id}`,
+      `Reason: ${rejectionReason}`,
+      order?.rejectionMessage
+        ? `Message from bakery: ${order.rejectionMessage}`
+        : "",
+      "",
+      "Please place a new order or contact the bakery for help.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    context: {
+      orderId: String(order?._id || ""),
+      event: "order-rejected",
+    },
   });
 };
 
@@ -697,12 +917,19 @@ const createPersistedOrder = async ({
   await order.save();
   await order.populate("items.product");
   await order.populate("user", "name email phone");
+  await order.populate("assignedDeliveryPartner", "name phone");
 
   emitOrderEvent("order-created", order.toObject());
   schedulePendingOrderPushRetries(order._id);
   // Send an immediate admin email without blocking order placement.
   sendPendingReminderForOrder(order._id, { force: true }).catch((error) => {
     logger.error("Immediate pending order email failed", {
+      orderId: order._id,
+      error: error.message,
+    });
+  });
+  sendOrderPlacedEmail(order).catch((error) => {
+    logger.error("Order placed email failed", {
       orderId: order._id,
       error: error.message,
     });
@@ -820,6 +1047,7 @@ exports.getUserOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user: req.user._id })
       .populate("items.product")
+      .populate("assignedDeliveryPartner", "name phone")
       .sort({ createdAt: -1 });
 
     res.json(orders);
@@ -835,7 +1063,8 @@ exports.getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate("items.product")
-      .populate("user", "name email phone");
+      .populate("user", "name email phone")
+      .populate("assignedDeliveryPartner", "name phone");
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -844,7 +1073,11 @@ exports.getOrder = async (req, res) => {
     // Check if user is authorized to view this order
     if (
       order.user._id.toString() !== req.user._id.toString() &&
-      req.user.role !== "admin"
+      req.user.role !== "admin" &&
+      !(
+        req.user.role === "delivery" &&
+        order.assignedDeliveryPartner?._id?.toString() === req.user._id.toString()
+      )
     ) {
       return res
         .status(403)
@@ -862,14 +1095,74 @@ exports.getOrder = async (req, res) => {
 // Update order status (admin only)
 exports.updateOrderStatus = async (req, res) => {
   try {
-    const { status } = req.body;
+    const {
+      status,
+      estimatedDeliveryTime,
+      customDeliveryTime,
+      acceptanceMessage,
+      rejectionReason,
+      rejectionMessage,
+      assignedDeliveryPartner,
+    } = req.body;
     const order = await Order.findById(req.params.id);
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    if (order.status !== status) {
+    const previousStatus = order.status;
+
+    if (status === "confirmed") {
+      const resolvedEstimatedDeliveryTime =
+        estimatedDeliveryTime || order.estimatedDeliveryTime;
+      const validEstimatedTimes = Object.keys(ESTIMATED_DELIVERY_LABELS);
+      if (
+        !validEstimatedTimes.includes(
+          String(resolvedEstimatedDeliveryTime || ""),
+        )
+      ) {
+        return res.status(400).json({
+          message: "Estimated delivery time is required for accepted orders",
+        });
+      }
+
+      if (
+        resolvedEstimatedDeliveryTime === "custom" &&
+        !String(customDeliveryTime || order.customDeliveryTime || "").trim()
+      ) {
+        return res.status(400).json({
+          message: "Custom delivery time is required when Custom is selected",
+        });
+      }
+    }
+
+    if (status === "cancelled" && !String(rejectionReason || "").trim()) {
+      return res.status(400).json({
+        message: "Rejection reason is required for rejected orders",
+      });
+    }
+
+    if (assignedDeliveryPartner) {
+      const deliveryPartner = await User.findOne({
+        _id: assignedDeliveryPartner,
+        role: "delivery",
+      })
+        .select("_id")
+        .lean();
+
+      if (!deliveryPartner) {
+        return res.status(400).json({
+          message: "Selected delivery partner was not found",
+        });
+      }
+
+      order.assignedDeliveryPartner = deliveryPartner._id;
+      if (order.deliveryStatus !== "delivered") {
+        order.deliveryStatus = "pending";
+      }
+    }
+
+    if (previousStatus !== status) {
       order.statusTimeline = [
         ...(Array.isArray(order.statusTimeline) ? order.statusTimeline : []),
         {
@@ -881,6 +1174,35 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     order.status = status;
+
+    if (status === "confirmed") {
+      order.estimatedDeliveryTime =
+        estimatedDeliveryTime || order.estimatedDeliveryTime;
+      order.customDeliveryTime =
+        order.estimatedDeliveryTime === "custom"
+          ? String(customDeliveryTime || order.customDeliveryTime || "").trim()
+          : "";
+      order.acceptanceMessage =
+        acceptanceMessage !== undefined
+          ? String(acceptanceMessage || "").trim()
+          : order.acceptanceMessage || "";
+      order.rejectionReason = undefined;
+      order.rejectionMessage = "";
+    }
+
+    if (status === "cancelled") {
+      order.estimatedDeliveryTime = undefined;
+      order.customDeliveryTime = "";
+      order.rejectionReason = rejectionReason;
+      order.rejectionMessage = String(rejectionMessage || "").trim();
+      order.acceptanceMessage = "";
+      order.deliveryStatus = "pending";
+      order.assignedDeliveryPartner = null;
+      if (order.paymentStatus === "pending") {
+        order.paymentStatus = "failed";
+      }
+    }
+
     if (status === "pending") {
       order.pendingReminderEscalatedAt = null;
     }
@@ -894,12 +1216,41 @@ exports.updateOrderStatus = async (req, res) => {
 
     await order.populate("items.product");
     await order.populate("user", "name email phone");
+    await order.populate("assignedDeliveryPartner", "name phone");
 
     emitOrderEvent("order-status-updated", order.toObject());
 
-    res.json(order);
+    if (
+      status === "confirmed" &&
+      (previousStatus !== "confirmed" ||
+        estimatedDeliveryTime !== undefined ||
+        acceptanceMessage !== undefined)
+    ) {
+      sendOrderAcceptedEmail(order).catch((error) => {
+        logger.error("Order accepted email failed", {
+          orderId: order._id,
+          error: error.message,
+        });
+      });
+    }
+
+    if (
+      status === "cancelled" &&
+      (previousStatus !== "cancelled" ||
+        rejectionReason !== undefined ||
+        rejectionMessage !== undefined)
+    ) {
+      sendOrderRejectedEmail(order).catch((error) => {
+        logger.error("Order rejected email failed", {
+          orderId: order._id,
+          error: error.message,
+        });
+      });
+    }
+
+    return res.json(order);
   } catch (error) {
-    res
+    return res
       .status(500)
       .json({ message: "Error updating order status", error: error.message });
   }
@@ -921,6 +1272,7 @@ exports.getAllOrders = async (req, res) => {
     const orders = await Order.find(query)
       .populate("items.product")
       .populate("user", "name email phone")
+      .populate("assignedDeliveryPartner", "name phone")
       .sort({ createdAt: -1 });
 
     res.json(orders);
@@ -945,7 +1297,16 @@ exports.getOrderAnalytics = async (req, res) => {
     const orders = await Order.find(query)
       .populate("items.product", "name category")
       .lean();
-    const productCount = await Product.countDocuments({});
+    const [productCount, customerCount] = await Promise.all([
+      Product.countDocuments({}),
+      User.countDocuments({ role: "user" }),
+    ]);
+    const last30Days = getLastNDates(30);
+    const dailyRevenueMap = new Map(
+      last30Days.map((entry) => [entry.key, 0]),
+    );
+    const ordersPerDayMap = new Map(last30Days.map((entry) => [entry.key, 0]));
+    const todayKey = toLocalDateKey(new Date());
 
     const nonCancelledOrders = orders.filter(
       (order) => order.status !== "cancelled",
@@ -961,9 +1322,40 @@ exports.getOrderAnalytics = async (req, res) => {
     const categoryTotals = {};
     const productSales = {};
     const statusBreakdown = {};
+    let todayOrders = 0;
+    let todayRevenue = 0;
+    let pendingOrders = 0;
 
     orders.forEach((order) => {
+      const createdKey = toLocalDateKey(order.createdAt || new Date());
+      const isNotCancelled = order.status !== "cancelled";
+
       statusBreakdown[order.status] = (statusBreakdown[order.status] || 0) + 1;
+      if (order.status === "pending") {
+        pendingOrders += 1;
+      }
+
+      if (ordersPerDayMap.has(createdKey)) {
+        ordersPerDayMap.set(
+          createdKey,
+          Number(ordersPerDayMap.get(createdKey) || 0) + 1,
+        );
+      }
+
+      if (isNotCancelled && dailyRevenueMap.has(createdKey)) {
+        dailyRevenueMap.set(
+          createdKey,
+          Number(dailyRevenueMap.get(createdKey) || 0) +
+            Number(order.totalAmount || 0),
+        );
+      }
+
+      if (createdKey === todayKey) {
+        todayOrders += 1;
+        if (isNotCancelled) {
+          todayRevenue += Number(order.totalAmount || 0);
+        }
+      }
 
       (order.items || []).forEach((item) => {
         const category = item.product?.category || "other";
@@ -971,25 +1363,45 @@ exports.getOrderAnalytics = async (req, res) => {
         categoryTotals[category] = (categoryTotals[category] || 0) + amount;
 
         const productName = item.product?.name || "Custom";
-        productSales[productName] =
-          (productSales[productName] || 0) + Number(item.quantity || 0);
+        productSales[productName] = {
+          name: productName,
+          quantity:
+            Number(productSales[productName]?.quantity || 0) +
+            Number(item.quantity || 0),
+          revenue:
+            Number(productSales[productName]?.revenue || 0) + amount,
+        };
       });
     });
 
-    res.json({
+    return res.json({
       totalRevenue,
       averageOrderValue,
       orderCount: orders.length,
       productCount,
+      customerCount,
+      todayOrders,
+      todayRevenue,
+      pendingOrders,
       categoryTotals,
       statusBreakdown,
-      topProducts: Object.entries(productSales)
-        .sort((left, right) => right[1] - left[1])
-        .slice(0, 8),
+      dailyRevenue: last30Days.map((entry) => ({
+        date: entry.key,
+        label: entry.label,
+        revenue: Number(dailyRevenueMap.get(entry.key) || 0),
+      })),
+      ordersPerDay: last30Days.map((entry) => ({
+        date: entry.key,
+        label: entry.label,
+        count: Number(ordersPerDayMap.get(entry.key) || 0),
+      })),
+      topProducts: Object.values(productSales)
+        .sort((left, right) => right.quantity - left.quantity)
+        .slice(0, 5),
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Error fetching order analytics",
       error: error.message,
     });
@@ -1039,6 +1451,7 @@ exports.cancelOrder = async (req, res) => {
 
     await order.populate("items.product");
     await order.populate("user", "name email phone");
+    await order.populate("assignedDeliveryPartner", "name phone");
 
     emitOrderEvent("order-status-updated", order.toObject());
 
@@ -1047,6 +1460,119 @@ exports.cancelOrder = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error cancelling order", error: error.message });
+  }
+};
+
+exports.getDeliveryPartners = async (req, res) => {
+  try {
+    const deliveryPartners = await User.find({ role: "delivery" })
+      .select("_id name email phone")
+      .sort({ name: 1 })
+      .lean();
+
+    return res.json(deliveryPartners);
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error fetching delivery partners",
+      error: error.message,
+    });
+  }
+};
+
+exports.getDeliveryPartnerOrders = async (req, res) => {
+  try {
+    const deliveryPartnerId = req.user._id;
+    const orders = await Order.find({
+      assignedDeliveryPartner: deliveryPartnerId,
+      status: { $in: ["confirmed", "preparing", "ready"] },
+      deliveryStatus: { $ne: "delivered" },
+    })
+      .populate("items.product", "name")
+      .populate("user", "name phone email")
+      .populate("assignedDeliveryPartner", "name phone")
+      .sort({ createdAt: -1 });
+
+    return res.json(orders);
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error fetching delivery orders",
+      error: error.message,
+    });
+  }
+};
+
+exports.updateDeliveryStatus = async (req, res) => {
+  try {
+    const { deliveryStatus } = req.body;
+    if (!["outForDelivery", "delivered"].includes(String(deliveryStatus || ""))) {
+      return res.status(400).json({
+        message: "deliveryStatus must be outForDelivery or delivered",
+      });
+    }
+
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (
+      !order.assignedDeliveryPartner ||
+      order.assignedDeliveryPartner.toString() !== req.user._id.toString()
+    ) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+
+    order.deliveryStatus = deliveryStatus;
+
+    if (deliveryStatus === "delivered") {
+      if (order.status !== "delivered") {
+        order.statusTimeline = [
+          ...(Array.isArray(order.statusTimeline) ? order.statusTimeline : []),
+          {
+            status: "delivered",
+            actorRole: "delivery",
+            updatedAt: new Date(),
+          },
+        ];
+      }
+      order.status = "delivered";
+      if (order.paymentMethod === "cash" && order.paymentStatus === "pending") {
+        order.paymentStatus = "completed";
+      }
+    } else if (deliveryStatus === "outForDelivery") {
+      if (order.status !== "ready") {
+        order.statusTimeline = [
+          ...(Array.isArray(order.statusTimeline) ? order.statusTimeline : []),
+          {
+            status: "ready",
+            actorRole: "delivery",
+            updatedAt: new Date(),
+          },
+        ];
+      }
+      order.status = "ready";
+    }
+
+    if (deliveryStatus === "delivered") {
+      order.deliveryStatus = "delivered";
+    } else {
+      order.deliveryStatus = "outForDelivery";
+    }
+
+    await order.save();
+    await order.populate("items.product");
+    await order.populate("user", "name email phone");
+    await order.populate("assignedDeliveryPartner", "name phone");
+
+    emitOrderEvent("order-status-updated", order.toObject());
+
+    return res.json(order);
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error updating delivery status",
+      error: error.message,
+    });
   }
 };
 

@@ -315,6 +315,16 @@ const siteContentSchema = new mongoose.Schema(
         },
       ],
     },
+    categoryOrder: {
+      type: [
+        {
+          type: String,
+          trim: true,
+          lowercase: true,
+        },
+      ],
+      default: ["cakes", "pastries", "breads", "cookies", "custom"],
+    },
     galleryItems: {
       type: [galleryItemSchema],
       default: [

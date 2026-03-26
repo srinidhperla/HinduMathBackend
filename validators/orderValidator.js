@@ -7,6 +7,8 @@ const VALID_ORDER_STATUSES = new Set([
   "delivered",
   "cancelled",
 ]);
+const isValidPhone = (value) =>
+  /^[+]?[0-9\s-]{10,15}$/.test(String(value || "").trim());
 
 const hasValidOrderItems = (items) =>
   Array.isArray(items) &&
@@ -20,7 +22,8 @@ const hasValidAddress = (deliveryAddress) =>
   typeof deliveryAddress.city === "string" &&
   deliveryAddress.city.trim() &&
   (deliveryAddress.phone === undefined ||
-    typeof deliveryAddress.phone === "string");
+    (typeof deliveryAddress.phone === "string" &&
+      isValidPhone(deliveryAddress.phone)));
 
 const validateOrderBasePayload = (payload = {}) => {
   if (!hasValidOrderItems(payload.items)) {

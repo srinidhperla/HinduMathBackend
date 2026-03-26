@@ -4,6 +4,9 @@ const isNonEmptyString = (value) =>
 const isValidEmail = (value) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 
+const isValidPhone = (value) =>
+  /^[+]?[0-9\s-]{10,15}$/.test(String(value || "").trim());
+
 const validateRegister = (req, res, next) => {
   const { name, email, password, phone } = req.body || {};
 
@@ -23,6 +26,10 @@ const validateRegister = (req, res, next) => {
 
   if (!isNonEmptyString(phone)) {
     return res.status(400).json({ message: "Phone number is required" });
+  }
+
+  if (!isValidPhone(phone)) {
+    return res.status(400).json({ message: "Valid phone number is required" });
   }
 
   return next();
@@ -57,6 +64,10 @@ const validateProfileUpdate = (req, res, next) => {
 
   if (phone !== undefined && !isNonEmptyString(phone)) {
     return res.status(400).json({ message: "Phone cannot be empty" });
+  }
+
+  if (phone !== undefined && !isValidPhone(phone)) {
+    return res.status(400).json({ message: "Phone number format is invalid" });
   }
 
   if (address !== undefined) {

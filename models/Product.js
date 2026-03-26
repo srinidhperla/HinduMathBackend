@@ -88,6 +88,11 @@ const productSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    displayOrder: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     portionType: {
       type: String,
       enum: ["weight", "size", "pieces"],
@@ -221,6 +226,7 @@ productSchema.index({
   category: "text",
   occasion: "text",
 });
+productSchema.index({ category: 1, isAvailable: 1, displayOrder: 1 });
 
 const Product = mongoose.model("Product", productSchema);
 

@@ -11,13 +11,14 @@ const {
   validateUpdateProduct,
   validateInventoryUpdate,
   validateAddReview,
-} = require("../src/validators/productValidator");
+} = require("../validators/productValidator");
 const {
   getAllProducts,
   getProduct,
   createProduct,
   updateProduct,
   updateProductInventory,
+  updateProductDisplayOrder,
   deleteProduct,
   addReview,
   renameCategory,
@@ -38,6 +39,13 @@ router.post(
 );
 
 // Admin routes
+router.put(
+  "/display-order",
+  auth,
+  isAdmin,
+  mediumOrderWriteLimiter,
+  updateProductDisplayOrder,
+);
 router.put(
   "/batch/category",
   auth,

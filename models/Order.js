@@ -99,7 +99,7 @@ const orderSchema = new mongoose.Schema({
       },
       actorRole: {
         type: String,
-        enum: ["admin", "user", "system"],
+        enum: ["admin", "delivery", "user", "system"],
         default: "system",
       },
     },
@@ -161,6 +161,29 @@ const orderSchema = new mongoose.Schema({
     required: true,
   },
   specialInstructions: String,
+  estimatedDeliveryTime: {
+    type: String,
+    enum: ["15min", "30min", "45min", "1hour", "1.5hours", "2hours", "custom"],
+    default: undefined,
+  },
+  customDeliveryTime: String,
+  acceptanceMessage: String,
+  rejectionReason: {
+    type: String,
+    enum: ["outOfStock", "tooFar", "shopClosed", "other"],
+    default: undefined,
+  },
+  rejectionMessage: String,
+  assignedDeliveryPartner: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    default: null,
+  },
+  deliveryStatus: {
+    type: String,
+    enum: ["pending", "outForDelivery", "delivered"],
+    default: "pending",
+  },
   createdAt: {
     type: Date,
     default: Date.now,
@@ -182,6 +205,27 @@ const orderSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+});
+
+orderSchema.pre("validate", function (next) {
+  if (
+    this.estimatedDeliveryTime === null ||
+    this.estimatedDeliveryTime === undefined ||
+    this.estimatedDeliveryTime === ""
+  ) {
+    this.estimatedDeliveryTime = undefined;
+    this.customDeliveryTime = "";
+  }
+
+  if (
+    this.rejectionReason === null ||
+    this.rejectionReason === undefined ||
+    this.rejectionReason === ""
+  ) {
+    this.rejectionReason = undefined;
+  }
+
+  next();
 });
 
 // Update the updatedAt timestamp before saving

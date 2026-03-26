@@ -10,7 +10,7 @@ const {
   subscribeAdminFcm,
   unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
-const { sendEmail } = require("../services/emailService");
+const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
 const { SITE_KEY } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
 
@@ -37,19 +37,29 @@ exports.getSiteContent = async (req, res) => {
 
 exports.updateSettings = async (req, res) => {
   try {
-    const { businessInfo, storeHours, socialLinks, coupons, deliverySettings } =
-      req.body;
+    const {
+      businessInfo,
+      storeHours,
+      socialLinks,
+      coupons,
+      deliverySettings,
+      categoryOrder,
+    } = req.body;
+    const updatePayload = {};
+
+    if (businessInfo !== undefined) updatePayload.businessInfo = businessInfo;
+    if (storeHours !== undefined) updatePayload.storeHours = storeHours;
+    if (socialLinks !== undefined) updatePayload.socialLinks = socialLinks;
+    if (coupons !== undefined) updatePayload.coupons = coupons;
+    if (deliverySettings !== undefined) {
+      updatePayload.deliverySettings = deliverySettings;
+    }
+    if (categoryOrder !== undefined) updatePayload.categoryOrder = categoryOrder;
 
     const content = await SiteContent.findOneAndUpdate(
       { singletonKey: SITE_KEY },
       {
-        $set: {
-          businessInfo,
-          storeHours,
-          socialLinks,
-          coupons,
-          deliverySettings,
-        },
+        $set: updatePayload,
       },
       {
         new: true,
@@ -64,6 +74,43 @@ exports.updateSettings = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error updating settings", error: error.message });
+  }
+};
+
+exports.updateCategoryOrder = async (req, res) => {
+  try {
+    const categoryOrder = Array.isArray(req.body?.categoryOrder)
+      ? req.body.categoryOrder
+          .map((entry) => String(entry || "").trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+
+    if (!categoryOrder.length) {
+      return res.status(400).json({
+        message: "categoryOrder must contain at least one category",
+      });
+    }
+
+    const content = await SiteContent.findOneAndUpdate(
+      { singletonKey: SITE_KEY },
+      { $set: { categoryOrder } },
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+        setDefaultsOnInsert: true,
+      },
+    );
+
+    return res.json({
+      message: "Category order updated successfully",
+      categoryOrder: content.categoryOrder || [],
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error updating category order",
+      error: error.message,
+    });
   }
 };
 
@@ -243,6 +290,7 @@ exports.getPaymentStatus = async (req, res) => {
 
 exports.sendTestAlertEmail = async (req, res) => {
   try {
+    const emailStatus = await getReminderStatus();
     const result = await sendTestReminderEmail();
 
     if (result.skipped) {
@@ -251,17 +299,24 @@ exports.sendTestAlertEmail = async (req, res) => {
           result.reason === "smtp-not-configured"
             ? "SMTP is not configured yet."
             : "Admin alert email recipient is not configured.",
+        emailStatus,
       });
     }
 
     res.json({
       message: `Test alert email sent to ${result.recipient}`,
       ...result,
+      emailStatus,
     });
   } catch (error) {
+    const smtpError = getSmtpErrorDetails(error);
+    const emailStatus = await getReminderStatus().catch(() => null);
     res.status(500).json({
-      message: "Error sending test alert email",
+      message: smtpError.hint,
       error: error.message,
+      code: smtpError.code,
+      responseCode: smtpError.responseCode,
+      emailStatus,
     });
   }
 };
@@ -269,11 +324,23 @@ exports.sendTestAlertEmail = async (req, res) => {
 exports.sendContactMessage = async (req, res) => {
   try {
     const { name, email, phone, subject, message } = req.body;
+    const trimmedEmail = String(email || "").trim();
+    const trimmedPhone = String(phone || "").trim();
 
     if (!name || !email || !subject || !message) {
       return res
         .status(400)
         .json({ message: "Name, email, subject, and message are required." });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      return res.status(400).json({ message: "Valid email is required." });
+    }
+
+    if (!/^[+]?[0-9\s-]{10,15}$/.test(trimmedPhone)) {
+      return res
+        .status(400)
+        .json({ message: "Valid phone number is required." });
     }
 
     const adminEmail =
@@ -285,13 +352,13 @@ exports.sendContactMessage = async (req, res) => {
       html: `
         <h2>New Contact Message</h2>
         <p><strong>Name:</strong> ${name}</p>
-        <p><strong>Email:</strong> ${email}</p>
-        <p><strong>Phone:</strong> ${phone || "Not provided"}</p>
+        <p><strong>Email:</strong> ${trimmedEmail}</p>
+        <p><strong>Phone:</strong> ${trimmedPhone || "Not provided"}</p>
         <p><strong>Subject:</strong> ${subject}</p>
         <hr />
         <p>${message.replace(/\n/g, "<br />")}</p>
       `,
-      replyTo: email,
+      replyTo: trimmedEmail,
     });
 
     if (result?.skipped) {

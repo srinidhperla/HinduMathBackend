@@ -27,13 +27,28 @@ const auth = async (req, res, next) => {
 
 const isAdmin = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access denied. Admin only." });
-    }
-    next();
+    return requireRole("admin")(req, res, next);
   } catch (error) {
     res.status(500).json({ message: "Server error." });
   }
 };
 
-module.exports = { auth, isAdmin };
+const requireRole =
+  (...allowedRoles) =>
+  async (req, res, next) => {
+    try {
+      if (!req.user || !allowedRoles.includes(req.user.role)) {
+        return res.status(403).json({
+          message: `Access denied. Allowed roles: ${allowedRoles.join(", ")}.`,
+        });
+      }
+
+      return next();
+    } catch (error) {
+      return res.status(500).json({ message: "Server error." });
+    }
+  };
+
+const isDelivery = requireRole("delivery");
+
+module.exports = { auth, isAdmin, isDelivery, requireRole };
