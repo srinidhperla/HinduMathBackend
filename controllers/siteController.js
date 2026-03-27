@@ -11,6 +11,7 @@ const {
   unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
 const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
+const { emitAdminDataUpdated } = require("../services/orderEvents");
 const { SITE_KEY } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
 const logger = require("../utils/logger");
@@ -70,6 +71,7 @@ exports.updateSettings = async (req, res) => {
       },
     );
 
+    emitAdminDataUpdated("settings", { action: "updated" });
     res.json(content);
   } catch (error) {
     res
@@ -103,6 +105,7 @@ exports.updateCategoryOrder = async (req, res) => {
       },
     );
 
+    emitAdminDataUpdated("settings", { action: "category-order-updated" });
     return res.json({
       message: "Category order updated successfully",
       categoryOrder: content.categoryOrder || [],
@@ -143,6 +146,7 @@ exports.addGalleryItem = async (req, res) => {
     });
 
     await content.save();
+    emitAdminDataUpdated("settings", { action: "gallery-item-added" });
     res.status(201).json(content.galleryItems[0]);
   } catch (error) {
     res
@@ -168,6 +172,7 @@ exports.deleteGalleryItem = async (req, res) => {
 
     galleryItem.deleteOne();
     await content.save();
+    emitAdminDataUpdated("settings", { action: "gallery-item-deleted" });
 
     res.json({
       message: "Gallery item deleted successfully",

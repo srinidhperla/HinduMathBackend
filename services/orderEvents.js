@@ -23,6 +23,18 @@ const setOrderEventSocketServer = (io) => {
   socketServer = io;
 };
 
+const emitAdminDataUpdated = (scope, payload = {}) => {
+  if (!socketServer) {
+    return;
+  }
+
+  socketServer.to("admin-orders").emit("admin-data-updated", {
+    scope: String(scope || "general"),
+    payload,
+    timestamp: new Date().toISOString(),
+  });
+};
+
 const emitOrderEvent = (eventName, payload) => {
   const event = {
     eventName,
@@ -31,6 +43,7 @@ const emitOrderEvent = (eventName, payload) => {
   };
 
   emitter.emit("order-event", event);
+  emitAdminDataUpdated("orders", { eventName });
 
   if (socketServer) {
     socketServer.to("admin-orders").emit(eventName, event);
@@ -67,5 +80,6 @@ const subscribeToOrderEvents = (listener) => {
 module.exports = {
   setOrderEventSocketServer,
   emitOrderEvent,
+  emitAdminDataUpdated,
   subscribeToOrderEvents,
 };
