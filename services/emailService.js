@@ -1,17 +1,33 @@
 const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const logger = require("../utils/logger");
 
 const parseBoolean = (value) =>
   ["true", "1", "yes", "on"].includes(String(value || "").toLowerCase());
 
-const getConfiguredHost = () =>
-  String(process.env.SMTP_HOST || "smtp.gmail.com").trim();
+const readEnv = (key, fallback = "") => {
+  const raw = String(process.env[key] ?? fallback).trim();
+  // Render dashboard values are sometimes pasted with quotes.
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'"))
+  ) {
+    return raw.slice(1, -1).trim();
+  }
+  return raw;
+};
 
-const getConfiguredPort = () => Number(process.env.SMTP_PORT || 587);
+const getConfiguredHost = () => readEnv("SMTP_HOST", "smtp.gmail.com");
+
+const getConfiguredPort = () => Number(readEnv("SMTP_PORT", "587")) || 587;
 
 const getConfiguredSecureMode = () => {
-  const secureEnv = String(process.env.SMTP_SECURE || "").trim();
-  return secureEnv.length > 0 ? parseBoolean(process.env.SMTP_SECURE) : false;
+  const secureEnv = readEnv("SMTP_SECURE");
+  if (secureEnv.length > 0) {
+    return parseBoolean(secureEnv);
+  }
+  // Default behavior: 465 uses implicit TLS, other SMTP ports use STARTTLS.
+  return getConfiguredPort() === 465;
 };
 
 const getMissingSmtpFields = () =>
@@ -19,11 +35,21 @@ const getMissingSmtpFields = () =>
     (key) => !String(process.env[key] || "").trim(),
   );
 
+const getResendApiKey = () => readEnv("RESEND_API_KEY");
+
+const getResendFrom = () =>
+  readEnv("EMAIL_FROM") || readEnv("SMTP_FROM") || readEnv("SMTP_USER");
+
+const getMissingResendFields = () =>
+  ["RESEND_API_KEY"].filter((key) => !readEnv(key));
+
+const isResendConfigured = () => Boolean(getResendApiKey() && getResendFrom());
+
 const getTransportOptions = () => {
   const host = getConfiguredHost();
   const port = getConfiguredPort();
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  const user = readEnv("SMTP_USER");
+  const pass = readEnv("SMTP_PASS");
 
   if (!user || !pass) {
     return null;
@@ -43,13 +69,14 @@ const getTransportOptions = () => {
       rejectUnauthorized: false,
     },
     // Keep SMTP operations from hanging indefinitely in some hosted environments.
-    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
-    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
-    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 20000),
+    connectionTimeout: Number(readEnv("SMTP_CONNECTION_TIMEOUT_MS", "10000")),
+    greetingTimeout: Number(readEnv("SMTP_GREETING_TIMEOUT_MS", "10000")),
+    socketTimeout: Number(readEnv("SMTP_SOCKET_TIMEOUT_MS", "20000")),
   };
 };
 
 let transporter;
+let resendClient;
 
 const getTransporter = () => {
   if (transporter) {
@@ -65,17 +92,39 @@ const getTransporter = () => {
   return transporter;
 };
 
-const isEmailConfigured = () => Boolean(getTransportOptions());
+const getResendClient = () => {
+  if (resendClient) {
+    return resendClient;
+  }
+
+  if (!isResendConfigured()) {
+    return null;
+  }
+
+  resendClient = new Resend(getResendApiKey());
+  return resendClient;
+};
+
+const isSmtpConfigured = () => Boolean(getTransportOptions());
+
+const isEmailConfigured = () => isResendConfigured() || isSmtpConfigured();
 
 const getEmailConfigurationStatus = () => ({
   configured: isEmailConfigured(),
+  provider: isResendConfigured()
+    ? "resend"
+    : isSmtpConfigured()
+      ? "smtp"
+      : "none",
+  resendConfigured: isResendConfigured(),
+  resendFrom: getResendFrom(),
+  missingResendFields: getMissingResendFields(),
+  smtpConfigured: isSmtpConfigured(),
   host: getConfiguredHost(),
   port: getConfiguredPort(),
   secure: getConfiguredSecureMode(),
-  secureSource: String(process.env.SMTP_SECURE || "").trim().length
-    ? "env"
-    : "port-default",
-  from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+  secureSource: readEnv("SMTP_SECURE").length ? "env" : "port-default",
+  from: readEnv("SMTP_FROM") || readEnv("SMTP_USER"),
   missingFields: getMissingSmtpFields(),
 });
 
@@ -83,36 +132,76 @@ const getSmtpErrorDetails = (error) => {
   const code = String(error?.code || "").trim();
   const responseCode = Number(error?.responseCode || 0) || undefined;
   const rawResponse = String(error?.response || "").trim();
+  const rawMessage = String(error?.message || "").trim();
   const isRenderEnvironment = Boolean(
     process.env.RENDER || process.env.RENDER_SERVICE_ID,
   );
 
-  let hint = "SMTP send failed. Check host, port, user, password, and Gmail App Password configuration.";
+  let hint =
+    "SMTP send failed. Check host, port, user, password, and Gmail App Password configuration.";
 
   if (code === "EAUTH" || responseCode === 535) {
-    hint = "SMTP authentication failed. Use the Gmail App Password, not the regular Gmail password.";
+    hint =
+      "SMTP authentication failed. Use the Gmail App Password, not the regular Gmail password.";
   } else if (code === "ESOCKET" || code === "ETIMEDOUT") {
     hint = isRenderEnvironment
       ? "SMTP connection failed. On Render, outbound SMTP on ports 25, 465, and 587 can be restricted depending on plan. Use an email API provider such as Resend, Brevo, or SendGrid, or move to a plan that supports your SMTP setup."
       : "SMTP connection failed. Verify smtp.gmail.com, port 587, firewall rules, and TLS settings.";
   } else if (responseCode === 550 || responseCode === 553) {
-    hint = "SMTP rejected the sender or recipient address. Verify SMTP_FROM, SMTP_USER, and target email addresses.";
+    hint =
+      "SMTP rejected the sender or recipient address. Verify SMTP_FROM, SMTP_USER, and target email addresses.";
+  } else if (/resend/i.test(rawMessage)) {
+    hint =
+      "Email API send failed. Verify RESEND_API_KEY, EMAIL_FROM sender, and recipient address.";
   }
 
   return {
     code: code || undefined,
     responseCode,
     response: rawResponse || undefined,
+    message: rawMessage || undefined,
     command: error?.command || undefined,
     hint,
   };
 };
 
 const sendEmail = async (mailOptions) => {
+  const activeResend = getResendClient();
+  if (activeResend) {
+    try {
+      const from = mailOptions?.from || getResendFrom();
+      const resendPayload = {
+        from,
+        to: mailOptions?.to,
+        subject: mailOptions?.subject,
+      };
+
+      if (mailOptions?.html) resendPayload.html = mailOptions.html;
+      if (mailOptions?.text) resendPayload.text = mailOptions.text;
+      if (mailOptions?.cc) resendPayload.cc = mailOptions.cc;
+      if (mailOptions?.bcc) resendPayload.bcc = mailOptions.bcc;
+      if (mailOptions?.replyTo) resendPayload.replyTo = mailOptions.replyTo;
+
+      const response = await activeResend.emails.send(resendPayload);
+      return {
+        ...response,
+        provider: "resend",
+      };
+    } catch (error) {
+      logger.error("Resend send failed", {
+        error: error?.message || String(error),
+        to: mailOptions?.to || "",
+        subject: mailOptions?.subject || "",
+      });
+      throw error;
+    }
+  }
+
   const activeTransporter = getTransporter();
   if (!activeTransporter) {
     const missingFields = getMissingSmtpFields();
-    logger.warn("SMTP not configured. Email skipped.", {
+    logger.warn("Email not configured. No Resend or SMTP credentials.", {
+      missingResendFields: getMissingResendFields(),
       host: getConfiguredHost(),
       port: getConfiguredPort(),
       secure: getConfiguredSecureMode(),
@@ -125,7 +214,7 @@ const sendEmail = async (mailOptions) => {
 
   try {
     return await activeTransporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      from: readEnv("SMTP_FROM") || readEnv("SMTP_USER"),
       ...mailOptions,
     });
   } catch (error) {
@@ -133,7 +222,7 @@ const sendEmail = async (mailOptions) => {
     logger.error("SMTP send failed", {
       error: error.message,
       host: getConfiguredHost(),
-      port: Number(process.env.SMTP_PORT || 587),
+      port: getConfiguredPort(),
       secure: getEmailConfigurationStatus().secure,
       missingFields: getMissingSmtpFields(),
       to: mailOptions?.to || "",
