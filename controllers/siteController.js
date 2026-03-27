@@ -350,7 +350,10 @@ exports.sendContactMessage = async (req, res) => {
     }
 
     const adminEmail =
-      process.env.ADMIN_CONTACT_EMAIL || "srinidhperla2004@gmail.com";
+      process.env.ADMIN_CONTACT_EMAIL ||
+      process.env.ADMIN_ALERT_EMAIL ||
+      process.env.SMTP_USER ||
+      "srinidhperla2004@gmail.com";
 
     const result = await sendEmail({
       to: adminEmail,
