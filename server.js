@@ -31,6 +31,9 @@ validateEnv();
 const app = express();
 const server = http.createServer(app);
 
+// Required behind reverse proxies (Render, Nginx, etc.) so req.ip and rate limits work.
+app.set("trust proxy", 1);
+
 // Security middleware
 app.use(helmet());
 app.use(mongoSanitize());
