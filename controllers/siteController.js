@@ -13,6 +13,7 @@ const {
 const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
 const { SITE_KEY } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
+const logger = require("../utils/logger");
 
 const getOrCreateSiteContent = async () => {
   let content = await SiteContent.findOne({ singletonKey: SITE_KEY });
@@ -311,6 +312,13 @@ exports.sendTestAlertEmail = async (req, res) => {
   } catch (error) {
     const smtpError = getSmtpErrorDetails(error);
     const emailStatus = await getReminderStatus().catch(() => null);
+    logger.error("Test alert email failed", {
+      error: error?.message || String(error),
+      code: smtpError.code,
+      responseCode: smtpError.responseCode,
+      hint: smtpError.hint,
+      emailStatus,
+    });
     const statusCode =
       smtpError.code === "EAUTH" ||
       smtpError.code === "ESOCKET" ||
@@ -378,8 +386,20 @@ exports.sendContactMessage = async (req, res) => {
 
     res.json({ message: "Message sent successfully." });
   } catch (error) {
+    const emailError = getSmtpErrorDetails(error);
+    logger.error("Contact form email failed", {
+      error: error?.message || String(error),
+      code: emailError.code,
+      responseCode: emailError.responseCode,
+      hint: emailError.hint,
+      to: process.env.ADMIN_CONTACT_EMAIL || process.env.ADMIN_ALERT_EMAIL || "",
+      fromReplyTo: req.body?.email || "",
+      subject: req.body?.subject || "",
+    });
     res
       .status(500)
-      .json({ message: "Failed to send message. Please try again later." });
+      .json({
+        message: emailError.hint || "Failed to send message. Please try again later.",
+      });
   }
 };
