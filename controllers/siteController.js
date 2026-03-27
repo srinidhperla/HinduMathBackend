@@ -297,8 +297,8 @@ exports.sendTestAlertEmail = async (req, res) => {
     if (result.skipped) {
       return res.status(400).json({
         message:
-          result.reason === "smtp-not-configured"
-            ? "SMTP is not configured yet."
+          result.reason === "email-not-configured"
+            ? "Email service is not configured yet."
             : "Admin alert email recipient is not configured.",
         emailStatus,
       });
@@ -360,7 +360,6 @@ exports.sendContactMessage = async (req, res) => {
     const adminEmail =
       process.env.ADMIN_CONTACT_EMAIL ||
       process.env.ADMIN_ALERT_EMAIL ||
-      process.env.SMTP_USER ||
       "srinidhperla2004@gmail.com";
 
     const result = await sendEmail({

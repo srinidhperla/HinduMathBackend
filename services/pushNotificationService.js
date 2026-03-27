@@ -8,7 +8,7 @@ const getPushConfig = () => {
   const privateKey = process.env.VAPID_PRIVATE_KEY || "";
   const subject =
     process.env.VAPID_SUBJECT ||
-    `mailto:${process.env.SMTP_FROM || process.env.SMTP_USER || "admin@hindumathascakes.com"}`;
+    "mailto:admin@hindumathascakes.com";
 
   if (!publicKey || !privateKey) {
     return null;
