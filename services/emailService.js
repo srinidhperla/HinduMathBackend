@@ -45,6 +45,8 @@ const getMissingResendFields = () =>
   ["RESEND_API_KEY"].filter((key) => !readEnv(key));
 
 const isResendConfigured = () => Boolean(getResendApiKey() && getResendFrom());
+const isRenderEnvironment = () =>
+  Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
 
 const getTransportOptions = () => {
   const host = getConfiguredHost();
@@ -113,6 +115,7 @@ const isEmailConfigured = () => isResendConfigured() || isSmtpConfigured();
 const getEmailConfigurationStatus = () => ({
   configured: isEmailConfigured(),
   provider: isResendConfigured() ? "resend" : isSmtpConfigured() ? "smtp" : "none",
+  renderEnvironment: isRenderEnvironment(),
   resendConfigured: isResendConfigured(),
   resendFrom: getResendFrom(),
   missingResendFields: getMissingResendFields(),
@@ -132,20 +135,20 @@ const getSmtpErrorDetails = (error) => {
   const responseCode = Number(error?.responseCode || 0) || undefined;
   const rawResponse = String(error?.response || "").trim();
   const rawMessage = String(error?.message || "").trim();
-  const isRenderEnvironment = Boolean(
-    process.env.RENDER || process.env.RENDER_SERVICE_ID,
-  );
+  const runningOnRender = isRenderEnvironment();
 
   let hint = "SMTP send failed. Check host, port, user, password, and Gmail App Password configuration.";
 
   if (code === "EAUTH" || responseCode === 535) {
     hint = "SMTP authentication failed. Use the Gmail App Password, not the regular Gmail password.";
   } else if (code === "ESOCKET" || code === "ETIMEDOUT") {
-    hint = isRenderEnvironment
+    hint = runningOnRender
       ? "SMTP connection failed. On Render, outbound SMTP on ports 25, 465, and 587 can be restricted depending on plan. Use an email API provider such as Resend, Brevo, or SendGrid, or move to a plan that supports your SMTP setup."
       : "SMTP connection failed. Verify smtp.gmail.com, port 587, firewall rules, and TLS settings.";
   } else if (responseCode === 550 || responseCode === 553) {
     hint = "SMTP rejected the sender or recipient address. Verify SMTP_FROM, SMTP_USER, and target email addresses.";
+  } else if (code === "ERENDER_EMAIL_PROVIDER") {
+    hint = "Email provider is not configured for Render. Set RESEND_API_KEY and EMAIL_FROM in Render environment variables.";
   } else if (/resend/i.test(rawMessage)) {
     hint = "Email API send failed. Verify RESEND_API_KEY, EMAIL_FROM sender, and recipient address.";
   }
@@ -161,6 +164,7 @@ const getSmtpErrorDetails = (error) => {
 };
 
 const sendEmail = async (mailOptions) => {
+  const runningOnRender = isRenderEnvironment();
   const activeResend = getResendClient();
   if (activeResend) {
     try {
@@ -190,6 +194,20 @@ const sendEmail = async (mailOptions) => {
       });
       throw error;
     }
+  }
+
+  if (runningOnRender) {
+    logger.error("Email send blocked: Resend is required on Render", {
+      missingResendFields: getMissingResendFields(),
+      resendFrom: getResendFrom(),
+      to: mailOptions?.to || "",
+      subject: mailOptions?.subject || "",
+    });
+    const error = new Error(
+      "Resend is not configured on Render. Set RESEND_API_KEY and EMAIL_FROM.",
+    );
+    error.code = "ERENDER_EMAIL_PROVIDER";
+    throw error;
   }
 
   const activeTransporter = getTransporter();
