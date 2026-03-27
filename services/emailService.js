@@ -17,7 +17,8 @@ const readEnv = (key, fallback = "") => {
   return raw;
 };
 
-const getConfiguredHost = () => readEnv("SMTP_HOST", "smtp.gmail.com");
+const getConfiguredHost = () =>
+  readEnv("SMTP_HOST", "smtp.gmail.com");
 
 const getConfiguredPort = () => Number(readEnv("SMTP_PORT", "587")) || 587;
 
@@ -111,11 +112,7 @@ const isEmailConfigured = () => isResendConfigured() || isSmtpConfigured();
 
 const getEmailConfigurationStatus = () => ({
   configured: isEmailConfigured(),
-  provider: isResendConfigured()
-    ? "resend"
-    : isSmtpConfigured()
-      ? "smtp"
-      : "none",
+  provider: isResendConfigured() ? "resend" : isSmtpConfigured() ? "smtp" : "none",
   resendConfigured: isResendConfigured(),
   resendFrom: getResendFrom(),
   missingResendFields: getMissingResendFields(),
@@ -123,7 +120,9 @@ const getEmailConfigurationStatus = () => ({
   host: getConfiguredHost(),
   port: getConfiguredPort(),
   secure: getConfiguredSecureMode(),
-  secureSource: readEnv("SMTP_SECURE").length ? "env" : "port-default",
+  secureSource: readEnv("SMTP_SECURE").length
+    ? "env"
+    : "port-default",
   from: readEnv("SMTP_FROM") || readEnv("SMTP_USER"),
   missingFields: getMissingSmtpFields(),
 });
@@ -137,22 +136,18 @@ const getSmtpErrorDetails = (error) => {
     process.env.RENDER || process.env.RENDER_SERVICE_ID,
   );
 
-  let hint =
-    "SMTP send failed. Check host, port, user, password, and Gmail App Password configuration.";
+  let hint = "SMTP send failed. Check host, port, user, password, and Gmail App Password configuration.";
 
   if (code === "EAUTH" || responseCode === 535) {
-    hint =
-      "SMTP authentication failed. Use the Gmail App Password, not the regular Gmail password.";
+    hint = "SMTP authentication failed. Use the Gmail App Password, not the regular Gmail password.";
   } else if (code === "ESOCKET" || code === "ETIMEDOUT") {
     hint = isRenderEnvironment
       ? "SMTP connection failed. On Render, outbound SMTP on ports 25, 465, and 587 can be restricted depending on plan. Use an email API provider such as Resend, Brevo, or SendGrid, or move to a plan that supports your SMTP setup."
       : "SMTP connection failed. Verify smtp.gmail.com, port 587, firewall rules, and TLS settings.";
   } else if (responseCode === 550 || responseCode === 553) {
-    hint =
-      "SMTP rejected the sender or recipient address. Verify SMTP_FROM, SMTP_USER, and target email addresses.";
+    hint = "SMTP rejected the sender or recipient address. Verify SMTP_FROM, SMTP_USER, and target email addresses.";
   } else if (/resend/i.test(rawMessage)) {
-    hint =
-      "Email API send failed. Verify RESEND_API_KEY, EMAIL_FROM sender, and recipient address.";
+    hint = "Email API send failed. Verify RESEND_API_KEY, EMAIL_FROM sender, and recipient address.";
   }
 
   return {
