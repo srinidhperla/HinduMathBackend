@@ -27,13 +27,6 @@ const resolveAdminReminderEmail = async () => {
     };
   }
 
-  if (process.env.SMTP_USER) {
-    return {
-      recipient: process.env.SMTP_USER,
-      recipientSource: "SMTP_USER",
-    };
-  }
-
   const siteContent = await SiteContent.findOne({
     singletonKey: SITE_KEY,
   }).lean();
@@ -220,7 +213,7 @@ const sendPendingReminderForOrder = async (orderId, { force = false } = {}) => {
   }
 
   if (!isEmailConfigured()) {
-    return { skipped: true, reason: "smtp-not-configured" };
+    return { skipped: true, reason: "email-not-configured" };
   }
 
   const recipient = await getAdminReminderEmail();
@@ -299,7 +292,7 @@ const getReminderStatus = async () => {
 
 const sendTestReminderEmail = async () => {
   if (!isEmailConfigured()) {
-    return { skipped: true, reason: "smtp-not-configured" };
+    return { skipped: true, reason: "email-not-configured" };
   }
 
   const recipient = await getAdminReminderEmail();
@@ -314,7 +307,7 @@ const sendTestReminderEmail = async () => {
     text: [
       "This is a test admin reminder email from Hindumatha's Cake World.",
       "",
-      "If you received this, SMTP alert delivery is working.",
+      "If you received this, email alert delivery is working.",
       `Sent at: ${sentAt.toISOString()}`,
       `Reminder interval: ${REMINDER_INTERVAL_MS / (60 * 1000)} minutes`,
     ].join("\n"),

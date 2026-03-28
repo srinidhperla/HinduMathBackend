@@ -136,6 +136,16 @@ const userSchema = new mongoose.Schema({
       },
     },
   ],
+  adminAlertPreferences: {
+    alertsEnabled: {
+      type: Boolean,
+      default: true,
+    },
+    updatedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
   createdAt: {
     type: Date,
     default: Date.now,

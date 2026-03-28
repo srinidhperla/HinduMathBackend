@@ -1,4 +1,5 @@
 const SiteContent = require("../models/SiteContent");
+const User = require("../models/User");
 const {
   getReminderStatus,
   sendTestReminderEmail,
@@ -11,8 +12,10 @@ const {
   unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
 const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
+const { emitAdminDataUpdated } = require("../services/orderEvents");
 const { SITE_KEY } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
+const logger = require("../utils/logger");
 
 const getOrCreateSiteContent = async () => {
   let content = await SiteContent.findOne({ singletonKey: SITE_KEY });
@@ -54,7 +57,8 @@ exports.updateSettings = async (req, res) => {
     if (deliverySettings !== undefined) {
       updatePayload.deliverySettings = deliverySettings;
     }
-    if (categoryOrder !== undefined) updatePayload.categoryOrder = categoryOrder;
+    if (categoryOrder !== undefined)
+      updatePayload.categoryOrder = categoryOrder;
 
     const content = await SiteContent.findOneAndUpdate(
       { singletonKey: SITE_KEY },
@@ -69,6 +73,7 @@ exports.updateSettings = async (req, res) => {
       },
     );
 
+    emitAdminDataUpdated("settings", { action: "updated" });
     res.json(content);
   } catch (error) {
     res
@@ -81,7 +86,11 @@ exports.updateCategoryOrder = async (req, res) => {
   try {
     const categoryOrder = Array.isArray(req.body?.categoryOrder)
       ? req.body.categoryOrder
-          .map((entry) => String(entry || "").trim().toLowerCase())
+          .map((entry) =>
+            String(entry || "")
+              .trim()
+              .toLowerCase(),
+          )
           .filter(Boolean)
       : [];
 
@@ -102,6 +111,7 @@ exports.updateCategoryOrder = async (req, res) => {
       },
     );
 
+    emitAdminDataUpdated("settings", { action: "category-order-updated" });
     return res.json({
       message: "Category order updated successfully",
       categoryOrder: content.categoryOrder || [],
@@ -142,6 +152,7 @@ exports.addGalleryItem = async (req, res) => {
     });
 
     await content.save();
+    emitAdminDataUpdated("settings", { action: "gallery-item-added" });
     res.status(201).json(content.galleryItems[0]);
   } catch (error) {
     res
@@ -167,6 +178,7 @@ exports.deleteGalleryItem = async (req, res) => {
 
     galleryItem.deleteOne();
     await content.save();
+    emitAdminDataUpdated("settings", { action: "gallery-item-deleted" });
 
     res.json({
       message: "Gallery item deleted successfully",
@@ -203,6 +215,62 @@ exports.getPushAlertStatus = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       message: "Error fetching push alert status",
+      error: error.message,
+    });
+  }
+};
+
+exports.getAdminAlertPreferences = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select(
+      "adminAlertPreferences role",
+    );
+
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ message: "Admin user not found" });
+    }
+
+    return res.json({
+      alertsEnabled: user.adminAlertPreferences?.alertsEnabled !== false,
+      updatedAt: user.adminAlertPreferences?.updatedAt || null,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error fetching admin alert preferences",
+      error: error.message,
+    });
+  }
+};
+
+exports.updateAdminAlertPreferences = async (req, res) => {
+  try {
+    if (typeof req.body?.alertsEnabled !== "boolean") {
+      return res.status(400).json({
+        message: "alertsEnabled must be a boolean",
+      });
+    }
+
+    const user = await User.findById(req.user._id).select(
+      "adminAlertPreferences role",
+    );
+
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ message: "Admin user not found" });
+    }
+
+    user.adminAlertPreferences = {
+      alertsEnabled: req.body.alertsEnabled,
+      updatedAt: new Date(),
+    };
+    await user.save();
+
+    return res.json({
+      alertsEnabled: user.adminAlertPreferences.alertsEnabled,
+      updatedAt: user.adminAlertPreferences.updatedAt,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error updating admin alert preferences",
       error: error.message,
     });
   }
@@ -296,8 +364,8 @@ exports.sendTestAlertEmail = async (req, res) => {
     if (result.skipped) {
       return res.status(400).json({
         message:
-          result.reason === "smtp-not-configured"
-            ? "SMTP is not configured yet."
+          result.reason === "email-not-configured"
+            ? "Email service is not configured yet."
             : "Admin alert email recipient is not configured.",
         emailStatus,
       });
@@ -311,6 +379,13 @@ exports.sendTestAlertEmail = async (req, res) => {
   } catch (error) {
     const smtpError = getSmtpErrorDetails(error);
     const emailStatus = await getReminderStatus().catch(() => null);
+    logger.error("Test alert email failed", {
+      error: error?.message || String(error),
+      code: smtpError.code,
+      responseCode: smtpError.responseCode,
+      hint: smtpError.hint,
+      emailStatus,
+    });
     const statusCode =
       smtpError.code === "EAUTH" ||
       smtpError.code === "ESOCKET" ||
@@ -352,7 +427,6 @@ exports.sendContactMessage = async (req, res) => {
     const adminEmail =
       process.env.ADMIN_CONTACT_EMAIL ||
       process.env.ADMIN_ALERT_EMAIL ||
-      process.env.SMTP_USER ||
       "srinidhperla2004@gmail.com";
 
     const result = await sendEmail({
@@ -378,8 +452,20 @@ exports.sendContactMessage = async (req, res) => {
 
     res.json({ message: "Message sent successfully." });
   } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Failed to send message. Please try again later." });
+    const emailError = getSmtpErrorDetails(error);
+    logger.error("Contact form email failed", {
+      error: error?.message || String(error),
+      code: emailError.code,
+      responseCode: emailError.responseCode,
+      hint: emailError.hint,
+      to:
+        process.env.ADMIN_CONTACT_EMAIL || process.env.ADMIN_ALERT_EMAIL || "",
+      fromReplyTo: req.body?.email || "",
+      subject: req.body?.subject || "",
+    });
+    res.status(500).json({
+      message:
+        emailError.hint || "Failed to send message. Please try again later.",
+    });
   }
 };

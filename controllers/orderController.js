@@ -229,7 +229,13 @@ const buildOrderItemSummary = (order) =>
     })
     .join("\n");
 
-const sendCustomerEmailSafely = async ({ to, subject, text, html, context }) => {
+const sendCustomerEmailSafely = async ({
+  to,
+  subject,
+  text,
+  html,
+  context,
+}) => {
   if (!String(to || "").trim()) {
     return { skipped: true, reason: "recipient-missing" };
   }
@@ -277,7 +283,8 @@ const sendOrderPlacedEmail = async (order) => {
 };
 
 const sendOrderAcceptedEmail = async (order) => {
-  const estimatedLabel = getEstimatedDeliveryLabel(order) || "Will be shared soon";
+  const estimatedLabel =
+    getEstimatedDeliveryLabel(order) || "Will be shared soon";
   const requestedDelivery = getRequestedDeliveryLabel(order);
   const adminMessage = String(order?.acceptanceMessage || "").trim();
 
@@ -901,6 +908,7 @@ const createPersistedOrder = async ({
     paymentGatewayOrderId: paymentData.paymentGatewayOrderId || "",
     paymentGatewayPaymentId: paymentData.paymentGatewayPaymentId || "",
     paymentGatewaySignature: paymentData.paymentGatewaySignature || "",
+    clientOrderRequestId: String(orderData?.clientOrderRequestId || "").trim(),
     statusTimeline: [
       {
         status: "pending",
@@ -941,6 +949,24 @@ const createPersistedOrder = async ({
 // Create new order
 exports.createOrder = async (req, res) => {
   try {
+    const clientOrderRequestId = String(
+      req.body?.clientOrderRequestId || "",
+    ).trim();
+
+    if (clientOrderRequestId) {
+      const existingOrder = await Order.findOne({
+        user: req.user._id,
+        clientOrderRequestId,
+      })
+        .populate("items.product")
+        .populate("user", "name email phone")
+        .populate("assignedDeliveryPartner", "name phone");
+
+      if (existingOrder) {
+        return res.status(200).json(existingOrder);
+      }
+    }
+
     const order = await createPersistedOrder({
       userId: req.user._id,
       orderData: req.body,
@@ -1076,7 +1102,8 @@ exports.getOrder = async (req, res) => {
       req.user.role !== "admin" &&
       !(
         req.user.role === "delivery" &&
-        order.assignedDeliveryPartner?._id?.toString() === req.user._id.toString()
+        order.assignedDeliveryPartner?._id?.toString() ===
+          req.user._id.toString()
       )
     ) {
       return res
@@ -1302,9 +1329,7 @@ exports.getOrderAnalytics = async (req, res) => {
       User.countDocuments({ role: "user" }),
     ]);
     const last30Days = getLastNDates(30);
-    const dailyRevenueMap = new Map(
-      last30Days.map((entry) => [entry.key, 0]),
-    );
+    const dailyRevenueMap = new Map(last30Days.map((entry) => [entry.key, 0]));
     const ordersPerDayMap = new Map(last30Days.map((entry) => [entry.key, 0]));
     const todayKey = toLocalDateKey(new Date());
 
@@ -1368,8 +1393,7 @@ exports.getOrderAnalytics = async (req, res) => {
           quantity:
             Number(productSales[productName]?.quantity || 0) +
             Number(item.quantity || 0),
-          revenue:
-            Number(productSales[productName]?.revenue || 0) + amount,
+          revenue: Number(productSales[productName]?.revenue || 0) + amount,
         };
       });
     });
@@ -1504,7 +1528,9 @@ exports.getDeliveryPartnerOrders = async (req, res) => {
 exports.updateDeliveryStatus = async (req, res) => {
   try {
     const { deliveryStatus } = req.body;
-    if (!["outForDelivery", "delivered"].includes(String(deliveryStatus || ""))) {
+    if (
+      !["outForDelivery", "delivered"].includes(String(deliveryStatus || ""))
+    ) {
       return res.status(400).json({
         message: "deliveryStatus must be outForDelivery or delivered",
       });

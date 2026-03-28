@@ -1,6 +1,7 @@
 const Product = require("../models/Product");
 const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const appwrite = require("../services/appwriteStorage");
+const { emitAdminDataUpdated } = require("../services/orderEvents");
 const logger = require("../utils/logger");
 
 const saveImageFile = async (file) => {
@@ -746,6 +747,10 @@ exports.createProduct = async (req, res) => {
 
     const product = new Product(payload);
     await product.save();
+    emitAdminDataUpdated("products", {
+      action: "created",
+      productId: product._id?.toString(),
+    });
     res.status(201).json(product);
   } catch (error) {
     res
@@ -820,6 +825,10 @@ exports.updateProduct = async (req, res) => {
       { new: true, runValidators: true },
     );
 
+    emitAdminDataUpdated("products", {
+      action: "updated",
+      productId: product?._id?.toString(),
+    });
     res.json(product);
   } catch (error) {
     res
@@ -845,6 +854,10 @@ exports.updateProductInventory = async (req, res) => {
       { new: true, runValidators: true },
     );
 
+    emitAdminDataUpdated("inventory", {
+      action: "updated",
+      productId: product?._id?.toString(),
+    });
     res.json(product);
   } catch (error) {
     res.status(500).json({
@@ -894,6 +907,10 @@ exports.updateProductDisplayOrder = async (req, res) => {
       .sort({ displayOrder: 1, name: 1 })
       .lean();
 
+    emitAdminDataUpdated("inventory", {
+      action: "display-order-updated",
+      category: normalizedCategory,
+    });
     return res.json({
       message: "Product order updated successfully",
       category: normalizedCategory,
@@ -926,6 +943,10 @@ exports.deleteProduct = async (req, res) => {
         : [product.image].filter(Boolean),
     );
 
+    emitAdminDataUpdated("products", {
+      action: "deleted",
+      productId: req.params.id,
+    });
     res.json({ message: "Product deleted successfully" });
   } catch (error) {
     res
@@ -997,6 +1018,11 @@ exports.renameCategory = async (req, res) => {
       { category: oldName.trim().toLowerCase() },
       { $set: { category: trimmed } },
     );
+    emitAdminDataUpdated("products", {
+      action: "category-renamed",
+      oldName,
+      newName: trimmed,
+    });
     res.json({
       message: "Category renamed",
       modifiedCount: result.modifiedCount,
@@ -1018,6 +1044,10 @@ exports.deleteCategory = async (req, res) => {
       { category: name.trim().toLowerCase() },
       { $set: { category: "cakes" } },
     );
+    emitAdminDataUpdated("products", {
+      action: "category-deleted",
+      name,
+    });
     res.json({
       message: "Category deleted, products moved to cakes",
       modifiedCount: result.modifiedCount,

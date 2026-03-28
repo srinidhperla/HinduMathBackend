@@ -10,6 +10,8 @@ const {
   deleteGalleryItem,
   getAlertStatus,
   getPushAlertStatus,
+  getAdminAlertPreferences,
+  updateAdminAlertPreferences,
   getPaymentStatus,
   subscribePushAlerts,
   sendTestAlertEmail,
@@ -23,6 +25,8 @@ const { strictAuthLimiter } = require("../middleware/rateLimiters");
 router.get("/", getSiteContent);
 router.get("/alerts/status", auth, isAdmin, getAlertStatus);
 router.get("/alerts/push-status", auth, isAdmin, getPushAlertStatus);
+router.get("/alerts/preferences", auth, isAdmin, getAdminAlertPreferences);
+router.put("/alerts/preferences", auth, isAdmin, updateAdminAlertPreferences);
 router.get("/payments/status", auth, isAdmin, getPaymentStatus);
 router.put("/settings", auth, isAdmin, updateSettings);
 router.put("/category-order", auth, isAdmin, updateCategoryOrder);

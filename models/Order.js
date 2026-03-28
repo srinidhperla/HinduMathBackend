@@ -139,6 +139,12 @@ const orderSchema = new mongoose.Schema({
     default: "",
     trim: true,
   },
+  clientOrderRequestId: {
+    type: String,
+    trim: true,
+    index: true,
+    sparse: true,
+  },
   deliveryAddress: {
     label: String,
     street: String,
