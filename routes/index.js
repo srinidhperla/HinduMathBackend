@@ -8,5 +8,6 @@ router.use("/orders", require("./orders"));
 router.use("/site", require("./site"));
 router.use("/admin", require("./admin"));
 router.use("/maps", require("./maps"));
+router.use("/alert", require("./alert"));
 
 module.exports = router;
