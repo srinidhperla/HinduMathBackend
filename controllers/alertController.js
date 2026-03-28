@@ -1,4 +1,6 @@
 const Order = require("../models/Order");
+const User = require("../models/User");
+const { emitOrderEvent } = require("../services/orderEvents");
 
 exports.getAlertOrders = async (req, res) => {
   try {
@@ -29,6 +31,87 @@ exports.getAlertOrders = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Error fetching alert orders",
+      error: error.message,
+    });
+  }
+};
+
+exports.getAlertDeliveryPartners = async (req, res) => {
+  try {
+    const deliveryPartners = await User.find({ role: "delivery" })
+      .select("_id name email phone")
+      .sort({ name: 1 })
+      .lean();
+
+    return res.json(deliveryPartners);
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error fetching delivery partners",
+      error: error.message,
+    });
+  }
+};
+
+exports.updateAlertDeliveryStatus = async (req, res) => {
+  try {
+    const { deliveryStatus } = req.body;
+    if (
+      !["outForDelivery", "delivered"].includes(String(deliveryStatus || ""))
+    ) {
+      return res.status(400).json({
+        message: "deliveryStatus must be outForDelivery or delivered",
+      });
+    }
+
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (deliveryStatus === "delivered") {
+      if (order.status !== "delivered") {
+        order.statusTimeline = [
+          ...(Array.isArray(order.statusTimeline) ? order.statusTimeline : []),
+          {
+            status: "delivered",
+            actorRole: "admin",
+            updatedAt: new Date(),
+          },
+        ];
+      }
+      order.status = "delivered";
+      if (order.paymentMethod === "cash" && order.paymentStatus === "pending") {
+        order.paymentStatus = "completed";
+      }
+    } else if (deliveryStatus === "outForDelivery") {
+      if (order.status !== "ready") {
+        order.statusTimeline = [
+          ...(Array.isArray(order.statusTimeline) ? order.statusTimeline : []),
+          {
+            status: "ready",
+            actorRole: "admin",
+            updatedAt: new Date(),
+          },
+        ];
+      }
+      order.status = "ready";
+    }
+
+    order.deliveryStatus =
+      deliveryStatus === "delivered" ? "delivered" : "outForDelivery";
+
+    await order.save();
+    await order.populate("items.product");
+    await order.populate("user", "name email phone");
+    await order.populate("assignedDeliveryPartner", "name phone");
+
+    emitOrderEvent("order-status-updated", order.toObject());
+
+    return res.json(order);
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error updating delivery status",
       error: error.message,
     });
   }
