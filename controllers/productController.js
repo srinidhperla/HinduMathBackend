@@ -1,6 +1,6 @@
 const Product = require("../models/Product");
 const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
-const appwrite = require("../services/appwriteStorage");
+const imageStorage = require("../services/cloudinaryStorage");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const logger = require("../utils/logger");
 
@@ -11,7 +11,7 @@ const saveImageFile = async (file) => {
 
   const extension = (file.originalname.match(/\.[^.]+$/) || [".jpg"])[0];
   const fileName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`;
-  const { url } = await appwrite.uploadFile(
+  const { url } = await imageStorage.uploadFile(
     file.buffer,
     fileName,
     file.mimetype,
@@ -20,9 +20,9 @@ const saveImageFile = async (file) => {
 };
 
 const deleteImageFile = async (imageUrl) => {
-  const fileId = appwrite.extractFileId(imageUrl);
+  const fileId = imageStorage.extractFileId(imageUrl);
   if (fileId) {
-    await appwrite.deleteFile(fileId);
+    await imageStorage.deleteFile(fileId);
   }
 };
 

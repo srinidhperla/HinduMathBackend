@@ -14,7 +14,7 @@ const {
 const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const { SITE_KEY } = require("../config/constants");
-const appwrite = require("../services/appwriteStorage");
+const imageStorage = require("../services/cloudinaryStorage");
 const logger = require("../utils/logger");
 
 const getOrCreateSiteContent = async () => {
@@ -133,7 +133,7 @@ exports.addGalleryItem = async (req, res) => {
     if (req.file) {
       const ext = (req.file.originalname.match(/\.[^.]+$/) || [".jpg"])[0];
       const fileName = `gallery-${Date.now()}${ext}`;
-      const result = await appwrite.uploadFile(
+      const result = await imageStorage.uploadFile(
         req.file.buffer,
         fileName,
         req.file.mimetype,
@@ -171,9 +171,9 @@ exports.deleteGalleryItem = async (req, res) => {
     }
 
     // Delete the image from Appwrite if it's stored there
-    const fileId = appwrite.extractFileId(galleryItem.imageUrl);
+    const fileId = imageStorage.extractFileId(galleryItem.imageUrl);
     if (fileId) {
-      await appwrite.deleteFile(fileId);
+      await imageStorage.deleteFile(fileId);
     }
 
     galleryItem.deleteOne();
