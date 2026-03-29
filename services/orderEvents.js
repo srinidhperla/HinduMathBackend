@@ -2,6 +2,19 @@ const { EventEmitter } = require("events");
 
 const emitter = new EventEmitter();
 let socketServer = null;
+const normalizeScope = (scope) =>
+  String(scope || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-");
+const PUBLIC_SCOPES = new Set([
+  "products",
+  "inventory",
+  "settings",
+  "delivery",
+  "delivery-settings",
+  "delivery-timing",
+]);
 
 const toId = (value) => {
   if (!value) {
@@ -23,16 +36,36 @@ const setOrderEventSocketServer = (io) => {
   socketServer = io;
 };
 
+const emitSiteDataUpdated = (scope, payload = {}) => {
+  if (!socketServer) {
+    return;
+  }
+
+  const normalizedScope = normalizeScope(scope || "general");
+
+  socketServer.emit("site-data-updated", {
+    scope: normalizedScope,
+    payload,
+    timestamp: new Date().toISOString(),
+  });
+};
+
 const emitAdminDataUpdated = (scope, payload = {}) => {
   if (!socketServer) {
     return;
   }
 
+  const normalizedScope = normalizeScope(scope || "general");
+
   socketServer.to("admin-orders").emit("admin-data-updated", {
-    scope: String(scope || "general"),
+    scope: normalizedScope,
     payload,
     timestamp: new Date().toISOString(),
   });
+
+  if (PUBLIC_SCOPES.has(normalizedScope)) {
+    emitSiteDataUpdated(normalizedScope, payload);
+  }
 };
 
 const emitOrderEvent = (eventName, payload) => {
@@ -82,4 +115,5 @@ module.exports = {
   emitOrderEvent,
   emitAdminDataUpdated,
   subscribeToOrderEvents,
+  emitSiteDataUpdated,
 };

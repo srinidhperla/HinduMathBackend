@@ -74,7 +74,8 @@ io.use(async (socket, next) => {
       bearerToken;
 
     if (!token) {
-      return next(new Error("Authentication required"));
+      socket.data.user = null;
+      return next();
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -127,6 +128,9 @@ app.use("/uploads", express.static(path.join(__dirname, "public", "uploads")));
 
 // Apply rate limiting
 app.use("/api", standardReadLimiter);
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
