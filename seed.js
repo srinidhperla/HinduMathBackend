@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+﻿const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const dotenv = require("dotenv");
 
@@ -27,7 +27,7 @@ const seedData = async () => {
       email: "admin@hindumathascakes.com",
       password: "admin123",
       role: "admin",
-      phone: "9876543210",
+      phone: "94904594990",
     });
     await adminUser.save();
     console.log("Admin user created: admin@hindumathascakes.com / admin123");
@@ -38,7 +38,7 @@ const seedData = async () => {
       email: "test@example.com",
       password: "test123",
       role: "user",
-      phone: "9876543211",
+      phone: "9490459499",
     });
     await testUser.save();
     console.log("Test user created: test@example.com / test123");
@@ -56,7 +56,6 @@ const seedData = async () => {
         sizes: ["2kg", "3kg", "5kg"],
         occasion: ["Wedding", "Anniversary"],
         isAvailable: true,
-        rating: 4.8,
       },
       {
         name: "Birthday Cake",
@@ -69,7 +68,6 @@ const seedData = async () => {
         sizes: ["500g", "1kg", "1.5kg"],
         occasion: ["Birthday", "Party"],
         isAvailable: true,
-        rating: 4.6,
       },
       {
         name: "Chocolate Truffle",
@@ -81,7 +79,6 @@ const seedData = async () => {
         sizes: ["500g", "1kg"],
         occasion: ["Birthday", "Party", "Gift"],
         isAvailable: true,
-        rating: 4.7,
       },
       {
         name: "Fruit Cake",
@@ -93,7 +90,6 @@ const seedData = async () => {
         sizes: ["500g", "1kg"],
         occasion: ["Birthday", "Party"],
         isAvailable: true,
-        rating: 4.5,
       },
       {
         name: "Red Velvet Cake",
@@ -105,7 +101,6 @@ const seedData = async () => {
         sizes: ["500g", "1kg", "1.5kg"],
         occasion: ["Birthday", "Anniversary", "Valentine"],
         isAvailable: true,
-        rating: 4.9,
       },
       {
         name: "Anniversary Special",
@@ -117,7 +112,6 @@ const seedData = async () => {
         sizes: ["1kg", "1.5kg", "2kg"],
         occasion: ["Anniversary"],
         isAvailable: true,
-        rating: 4.8,
       },
       {
         name: "Party Cake",
@@ -129,7 +123,6 @@ const seedData = async () => {
         sizes: ["1kg", "2kg"],
         occasion: ["Birthday", "Party"],
         isAvailable: true,
-        rating: 4.6,
       },
       {
         name: "Assorted Cupcakes",
@@ -141,7 +134,6 @@ const seedData = async () => {
         sizes: ["6 pieces", "12 pieces"],
         occasion: ["Birthday", "Party", "Gift"],
         isAvailable: true,
-        rating: 4.5,
       },
       {
         name: "Chocolate Pastry",
@@ -153,7 +145,6 @@ const seedData = async () => {
         sizes: ["Single"],
         occasion: ["Snack"],
         isAvailable: true,
-        rating: 4.4,
       },
       {
         name: "Butter Cookies",
@@ -165,7 +156,6 @@ const seedData = async () => {
         sizes: ["250g", "500g"],
         occasion: ["Gift", "Snack"],
         isAvailable: true,
-        rating: 4.3,
       },
       {
         name: "Fresh Bread Loaf",
@@ -177,7 +167,6 @@ const seedData = async () => {
         sizes: ["400g"],
         occasion: ["Daily"],
         isAvailable: true,
-        rating: 4.5,
       },
       {
         name: "Custom Designer Cake",
@@ -200,14 +189,13 @@ const seedData = async () => {
         },
         occasion: ["Birthday", "Wedding", "Anniversary", "Custom"],
         isAvailable: true,
-        rating: 4.9,
       },
     ];
 
     await Product.insertMany(products);
     console.log(`${products.length} products created`);
 
-    console.log("\n✅ Database seeded successfully!");
+    console.log("\nâœ… Database seeded successfully!");
     console.log("\nYou can now login with:");
     console.log("Admin: admin@hindumathascakes.com / admin123");
     console.log("User: test@example.com / test123");

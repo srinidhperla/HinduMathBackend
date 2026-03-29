@@ -20,7 +20,7 @@ const orderSchema = new mongoose.Schema({
       },
       size: String,
       flavor: String,
-      eggType: {
+      cakeType: {
         type: String,
         enum: ["egg", "eggless"],
         default: "egg",
@@ -32,6 +32,51 @@ const orderSchema = new mongoose.Schema({
           price: Number,
         },
       ],
+      productName: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      productImage: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      weight: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      customMessage: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      occasion: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      selectedOptions: [
+        {
+          _id: false,
+          label: {
+            type: String,
+            trim: true,
+            default: "",
+          },
+          value: {
+            type: String,
+            trim: true,
+            default: "",
+          },
+        },
+      ],
+      optionSummary: {
+        type: String,
+        trim: true,
+        default: "",
+      },
       price: {
         type: Number,
         required: true,

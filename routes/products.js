@@ -10,7 +10,6 @@ const {
   validateCreateProduct,
   validateUpdateProduct,
   validateInventoryUpdate,
-  validateAddReview,
 } = require("../validators/productValidator");
 const {
   getAllProducts,
@@ -20,7 +19,6 @@ const {
   updateProductInventory,
   updateProductDisplayOrder,
   deleteProduct,
-  addReview,
   renameCategory,
   deleteCategory,
 } = require("../controllers/productController");
@@ -28,15 +26,6 @@ const {
 // Public routes
 router.get("/", standardReadLimiter, getAllProducts);
 router.get("/:id", standardReadLimiter, getProduct);
-
-// Protected routes (require authentication)
-router.post(
-  "/:id/reviews",
-  auth,
-  mediumOrderWriteLimiter,
-  validateAddReview,
-  addReview,
-);
 
 // Admin routes
 router.put(

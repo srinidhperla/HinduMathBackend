@@ -683,9 +683,7 @@ exports.getAllProducts = async (req, res) => {
         ? { [normalizedSortBy]: normalizedSortOrder }
         : { category: 1, displayOrder: 1, name: 1, createdAt: -1 };
 
-    const products = await Product.find(query)
-      .sort(sort)
-      .populate("reviews.user", "name");
+    const products = await Product.find(query).sort(sort);
 
     res.json(products);
   } catch (error) {
@@ -698,10 +696,7 @@ exports.getAllProducts = async (req, res) => {
 // Get single product
 exports.getProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).populate(
-      "reviews.user",
-      "name",
-    );
+    const product = await Product.findById(req.params.id);
 
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
@@ -952,51 +947,6 @@ exports.deleteProduct = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error deleting product", error: error.message });
-  }
-};
-
-// Add review to product
-exports.addReview = async (req, res) => {
-  try {
-    const { rating, comment } = req.body;
-    const product = await Product.findById(req.params.id);
-
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
-
-    // Check if user has already reviewed
-    const hasReviewed = product.reviews.some(
-      (review) => review.user.toString() === req.user._id.toString(),
-    );
-
-    if (hasReviewed) {
-      return res
-        .status(400)
-        .json({ message: "You have already reviewed this product" });
-    }
-
-    // Add review
-    product.reviews.push({
-      user: req.user._id,
-      rating,
-      comment,
-    });
-
-    // Update average rating
-    const totalRating = product.reviews.reduce(
-      (acc, review) => acc + review.rating,
-      0,
-    );
-    product.rating = totalRating / product.reviews.length;
-
-    await product.save();
-    await product.populate("reviews.user", "name");
-    res.json(product);
-  } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Error adding review", error: error.message });
   }
 };
 

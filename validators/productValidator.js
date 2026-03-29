@@ -66,27 +66,8 @@ const validateInventoryUpdate = (req, res, next) => {
   return next();
 };
 
-const validateAddReview = (req, res, next) => {
-  const { rating, comment } = req.body || {};
-
-  if (
-    !Number.isFinite(Number(rating)) ||
-    Number(rating) < 1 ||
-    Number(rating) > 5
-  ) {
-    return res.status(400).json({ message: "Rating must be between 1 and 5" });
-  }
-
-  if (comment !== undefined && typeof comment !== "string") {
-    return res.status(400).json({ message: "Comment must be text" });
-  }
-
-  return next();
-};
-
 module.exports = {
   validateCreateProduct,
   validateUpdateProduct,
   validateInventoryUpdate,
-  validateAddReview,
 };

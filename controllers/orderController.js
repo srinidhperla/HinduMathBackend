@@ -212,18 +212,197 @@ const formatAddressLabel = (address = {}) =>
     .filter(Boolean)
     .join(", ");
 
+const trimText = (value) => String(value ?? "").trim();
+
+const formatEggTypeLabel = (eggType = "") => {
+  if (String(eggType).toLowerCase() === "eggless") {
+    return "Eggless";
+  }
+
+  if (String(eggType).toLowerCase() === "egg") {
+    return "Egg";
+  }
+
+  return trimText(eggType);
+};
+
+const keyToOptionLabel = (key = "") => {
+  const compact = String(key).replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const mappedLabels = {
+    eggtype: "Cake Type",
+    caketype: "Cake Type",
+    flavor: "Flavor",
+    size: "Size",
+    weight: "Weight",
+    occasion: "Occasion",
+    custommessage: "Message on Cake",
+    messageoncake: "Message on Cake",
+    message: "Message on Cake",
+    portion: "Portion",
+    portiontype: "Portion",
+  };
+
+  if (mappedLabels[compact]) {
+    return mappedLabels[compact];
+  }
+
+  return trimText(key)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
+const normalizeOptionValue = (value) => {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return trimText(value);
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).trim();
+  }
+
+  return "";
+};
+
+const appendOptionEntry = (entries, label, value) => {
+  const normalizedLabel = trimText(label);
+  const normalizedValue = normalizeOptionValue(value);
+  if (!normalizedLabel || !normalizedValue) {
+    return;
+  }
+
+  entries.push({
+    label: normalizedLabel,
+    value: normalizedValue,
+  });
+};
+
+const dedupeOptionEntries = (entries = []) => {
+  const seen = new Set();
+  const normalizedEntries = [];
+
+  entries.forEach((entry) => {
+    const label = trimText(entry?.label);
+    const value = normalizeOptionValue(entry?.value);
+    if (!label || !value) {
+      return;
+    }
+
+    const dedupeKey = `${label.toLowerCase()}::${value.toLowerCase()}`;
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+
+    seen.add(dedupeKey);
+    normalizedEntries.push({ label, value });
+  });
+
+  return normalizedEntries;
+};
+
+const normalizeSelectedOptionEntries = (selectedOptions) => {
+  const entries = [];
+
+  if (Array.isArray(selectedOptions)) {
+    selectedOptions.forEach((option) => {
+      const label = trimText(option?.label || option?.name || option?.key);
+      const value = normalizeOptionValue(
+        option?.value ?? option?.choice ?? option?.selected,
+      );
+      appendOptionEntry(entries, label, value);
+    });
+
+    return dedupeOptionEntries(entries);
+  }
+
+  if (!selectedOptions || typeof selectedOptions !== "object") {
+    return [];
+  }
+
+  Object.entries(selectedOptions).forEach(([key, rawValue]) => {
+    if (rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)) {
+      appendOptionEntry(
+        entries,
+        trimText(rawValue.label) || keyToOptionLabel(key),
+        rawValue.value ?? rawValue.choice ?? rawValue.selected ?? "",
+      );
+      return;
+    }
+
+    appendOptionEntry(entries, keyToOptionLabel(key), rawValue);
+  });
+
+  return dedupeOptionEntries(entries);
+};
+
+const buildOrderItemSelectedOptions = ({
+  item,
+  selectedWeightLabel,
+  resolvedEggType,
+}) => {
+  const entries = normalizeSelectedOptionEntries(item?.selectedOptions);
+  const normalizedSize = trimText(item?.size || selectedWeightLabel || "");
+  const normalizedWeight = trimText(item?.weight || normalizedSize);
+  const normalizedFlavor = trimText(item?.flavor || "");
+  const normalizedOccasion = trimText(item?.occasion || "");
+  const normalizedMessage = trimText(
+    item?.customMessage || item?.message || item?.cakeMessage || "",
+  );
+  const portionLabel = trimText(
+    item?.portionLabel || item?.portionTypeLabel || item?.portionType || "",
+  );
+
+  appendOptionEntry(entries, "Size", normalizedSize);
+  appendOptionEntry(entries, "Weight", normalizedWeight);
+  appendOptionEntry(entries, "Flavor", normalizedFlavor);
+  appendOptionEntry(entries, "Cake Type", formatEggTypeLabel(resolvedEggType));
+  appendOptionEntry(entries, "Occasion", normalizedOccasion);
+  appendOptionEntry(entries, "Message on Cake", normalizedMessage);
+  appendOptionEntry(entries, "Portion", portionLabel);
+
+  if (Array.isArray(item?.customizations)) {
+    item.customizations.forEach((customization) => {
+      appendOptionEntry(
+        entries,
+        trimText(customization?.name) || "Customization",
+        trimText(customization?.choice),
+      );
+    });
+  }
+
+  return dedupeOptionEntries(entries);
+};
+
+const buildOrderItemOptionSummary = (selectedOptions = []) =>
+  selectedOptions
+    .map((entry) => `${entry.label}: ${entry.value}`)
+    .filter(Boolean)
+    .join(" | ");
+
+const getOrderItemDisplayName = (item) =>
+  trimText(item?.productName) || trimText(item?.product?.name) || "Product";
+
 const buildOrderItemSummary = (order) =>
   (order?.items || [])
     .map((item) => {
-      const parts = [
-        item.product?.name || "Product",
-        `Qty ${Number(item.quantity) || 0}`,
-      ];
-      if (item.size) {
-        parts.push(item.size);
-      }
-      if (item.flavor) {
-        parts.push(item.flavor);
+      const parts = [getOrderItemDisplayName(item), `Qty ${Number(item.quantity) || 0}`];
+      const optionSummary =
+        trimText(item?.optionSummary) ||
+        buildOrderItemOptionSummary(normalizeSelectedOptionEntries(item?.selectedOptions));
+      if (optionSummary) {
+        parts.push(optionSummary);
+      } else {
+        const fallbackSummary = [item?.size, item?.weight, item?.flavor]
+          .map((value) => trimText(value))
+          .filter(Boolean)
+          .join(" | ");
+        if (fallbackSummary) {
+          parts.push(fallbackSummary);
+        }
       }
       return `- ${parts.join(" | ")}`;
     })
@@ -501,6 +680,77 @@ const getWeightOptions = (product) => {
   }));
 };
 
+const getObjectEntries = (source) => {
+  if (!source || typeof source !== "object") {
+    return [];
+  }
+
+  if (source instanceof Map) {
+    return Array.from(source.entries());
+  }
+
+  return Object.entries(source);
+};
+
+const resolveTypedRow = (source, typedKey) => {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+
+  const direct =
+    source[typedKey] ||
+    source?.get?.(typedKey) ||
+    source[String(typedKey).toLowerCase()] ||
+    source?.get?.(String(typedKey).toLowerCase());
+
+  if (direct && typeof direct === "object") {
+    return direct;
+  }
+
+  const typedKeyLower = String(typedKey).trim().toLowerCase();
+  const matchedEntry = getObjectEntries(source).find(
+    ([key]) => String(key || "").trim().toLowerCase() === typedKeyLower,
+  );
+  return matchedEntry && typeof matchedEntry[1] === "object"
+    ? matchedEntry[1]
+    : null;
+};
+
+const readRowValue = (row, label) => {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+
+  const normalizedLabel = String(label || "").trim();
+  if (normalizedLabel in row) {
+    return row[normalizedLabel];
+  }
+
+  const lowerLabel = normalizedLabel.toLowerCase();
+  if (lowerLabel in row) {
+    return row[lowerLabel];
+  }
+
+  const matchedEntry = getObjectEntries(row).find(
+    ([key]) => String(key || "").trim().toLowerCase() === lowerLabel,
+  );
+  return matchedEntry ? matchedEntry[1] : undefined;
+};
+
+const readVariantPriceValue = (value) => {
+  const direct = Number(value);
+  if (Number.isFinite(direct) && direct > 0) {
+    return direct;
+  }
+
+  const nested = Number(value?.price);
+  if (Number.isFinite(nested) && nested > 0) {
+    return nested;
+  }
+
+  return null;
+};
+
 const isFlavorWeightAvailable = (
   product,
   flavorName,
@@ -517,13 +767,21 @@ const isFlavorWeightAvailable = (
   }
 
   const typedKey = eggType ? `${eggType}::${flavorName}` : "";
+  const typedRow = typedKey ? resolveTypedRow(matrix, typedKey) : null;
+
+  if (eggType && !typedRow) {
+    const hasAnyTypedFlavorRows = ["egg", "eggless"].some((type) => {
+      const key = `${type}::${flavorName}`;
+      return Boolean(resolveTypedRow(matrix, key));
+    });
+
+    if (hasAnyTypedFlavorRows) {
+      return true;
+    }
+  }
+
   const row =
-    (typedKey
-      ? (matrix[typedKey] ??
-        matrix[String(typedKey).toLowerCase()] ??
-        matrix?.get?.(typedKey) ??
-        matrix?.get?.(String(typedKey).toLowerCase()))
-      : null) ??
+    typedRow ??
     matrix[flavorName] ??
     matrix[String(flavorName).toLowerCase()] ??
     matrix?.get?.(flavorName) ??
@@ -533,13 +791,9 @@ const isFlavorWeightAvailable = (
     return true;
   }
 
-  const value =
-    row[weightLabel] ??
-    row[String(weightLabel).toLowerCase()] ??
-    row?.get?.(weightLabel) ??
-    row?.get?.(String(weightLabel).toLowerCase());
+  const value = readRowValue(row, weightLabel);
 
-  return value !== false;
+  return value !== false && value !== null;
 };
 
 const resolveFlavorForPricing = (product, flavorName = "") => {
@@ -578,24 +832,15 @@ const getVariantPrice = (
 
   const resolvedFlavor = resolveFlavorForPricing(product, flavorName);
   const typedKey = `${eggType}::${resolvedFlavor}`;
-  const row =
-    source[typedKey] ||
-    source?.get?.(typedKey) ||
-    source[String(typedKey).toLowerCase()] ||
-    source?.get?.(String(typedKey).toLowerCase());
+  const row = resolveTypedRow(source, typedKey);
 
   if (!row || typeof row !== "object") {
     return fallbackPrice;
   }
 
-  const direct = Number(row[weightLabel]);
-  if (Number.isFinite(direct) && direct > 0) {
+  const direct = readVariantPriceValue(readRowValue(row, weightLabel));
+  if (direct !== null) {
     return direct;
-  }
-
-  const lower = Number(row[String(weightLabel).toLowerCase()]);
-  if (Number.isFinite(lower) && lower > 0) {
-    return lower;
   }
 
   return fallbackPrice;
@@ -647,8 +892,11 @@ const validateAndPriceOrder = async ({
     const weightOptions = getWeightOptions(product);
     const hasEgg = product.isEgg !== false;
     const hasEggless = product.isEggless === true;
+    const rawRequestedCakeType = trimText(item.cakeType || item.eggType);
     const requestedEggType =
-      item.eggType === "eggless" || item.eggType === "egg" ? item.eggType : "";
+      rawRequestedCakeType === "eggless" || rawRequestedCakeType === "egg"
+        ? rawRequestedCakeType
+        : "";
     const resolvedEggType =
       requestedEggType || (hasEggless && !hasEgg ? "eggless" : "egg");
 
@@ -660,8 +908,9 @@ const validateAndPriceOrder = async ({
       throw new Error(`${product.name} is not available in Egg cake type`);
     }
 
+    let selectedFlavor = null;
     if (item.flavor) {
-      const selectedFlavor = flavorOptions.find(
+      selectedFlavor = flavorOptions.find(
         (option) => option.name.toLowerCase() === item.flavor.toLowerCase(),
       );
 
@@ -730,12 +979,34 @@ const validateAndPriceOrder = async ({
       );
     }
 
+    const normalizedSize = trimText(selectedWeight?.label || item.size || "");
+    const normalizedFlavor = trimText(selectedFlavor?.name || item.flavor || "");
+    const normalizedWeight = trimText(item.weight || normalizedSize);
+    const normalizedMessage = trimText(
+      item.customMessage || item.message || item.cakeMessage || "",
+    );
+    const normalizedOccasion = trimText(item.occasion || "");
+    const selectedOptions = buildOrderItemSelectedOptions({
+      item,
+      selectedWeightLabel: normalizedSize,
+      resolvedEggType,
+    });
+
     validatedItems.push({
       product: product._id,
       quantity: Number(item.quantity),
-      size: item.size || "",
-      flavor: item.flavor || "",
-      eggType: resolvedEggType,
+      productName: trimText(item.productName || product.name),
+      productImage: trimText(
+        item.productImage || product.images?.[0] || product.image || "",
+      ),
+      size: normalizedSize,
+      weight: normalizedWeight,
+      flavor: normalizedFlavor,
+      cakeType: resolvedEggType,
+      customMessage: normalizedMessage,
+      occasion: normalizedOccasion,
+      selectedOptions,
+      optionSummary: buildOrderItemOptionSummary(selectedOptions),
       customizations: item.customizations || [],
       price: itemPrice,
     });

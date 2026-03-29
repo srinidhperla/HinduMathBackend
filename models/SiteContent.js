@@ -138,7 +138,7 @@ const siteContentSchema = new mongoose.Schema(
       },
       phone: {
         type: String,
-        default: "+91 98765 43210",
+        default: "+91 9490459499",
       },
       address: {
         type: String,
@@ -282,7 +282,7 @@ const siteContentSchema = new mongoose.Schema(
       },
       whatsapp: {
         type: String,
-        default: "https://wa.me/919876543210",
+        default: "https://wa.me/9194904594990",
       },
     },
     coupons: {
