@@ -7,6 +7,10 @@ const {
   standardReadLimiter,
 } = require("../middleware/rateLimiters");
 const {
+  buildStableQueryKey,
+  cacheResponse,
+} = require("../middleware/responseCache");
+const {
   validateCreateProduct,
   validateUpdateProduct,
   validateInventoryUpdate,
@@ -24,7 +28,18 @@ const {
 } = require("../controllers/productController");
 
 // Public routes
-router.get("/", standardReadLimiter, getAllProducts);
+router.get(
+  "/",
+  standardReadLimiter,
+  cacheResponse({
+    key: (req) => {
+      const queryKey = buildStableQueryKey(req.query);
+      return queryKey ? `products?${queryKey}` : "products";
+    },
+    ttlSeconds: 300,
+  }),
+  getAllProducts,
+);
 router.get("/:id", standardReadLimiter, getProduct);
 
 // Admin routes

@@ -1,5 +1,6 @@
 const express = require("express");
 const http = require("http");
+const compression = require("compression");
 const cors = require("cors");
 const helmet = require("helmet");
 const mongoSanitize = require("express-mongo-sanitize");
@@ -24,6 +25,7 @@ const {
   startOrderReminderService,
 } = require("./services/orderReminderService");
 const { setOrderEventSocketServer } = require("./services/orderEvents");
+const { initCache } = require("./services/cacheStore");
 
 validateEnv();
 
@@ -35,8 +37,46 @@ const server = http.createServer(app);
 app.set("trust proxy", 1);
 
 // Security middleware
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        defaultSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+      },
+    },
+    frameguard: { action: "deny" },
+    noSniff: true,
+    hsts:
+      process.env.NODE_ENV === "production"
+        ? {
+            maxAge: 31536000,
+            includeSubDomains: true,
+            preload: true,
+          }
+        : false,
+  }),
+);
 app.use(mongoSanitize());
+app.use(compression());
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+  );
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains; preload",
+    );
+  }
+  next();
+});
 
 // CORS
 const allowedOrigins = process.env.CORS_ORIGIN
@@ -152,7 +192,8 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 
 connectDB()
-  .then(() => {
+  .then(async () => {
+    await initCache();
     startOrderReminderService();
 
     server.on("error", (error) => {

@@ -21,8 +21,13 @@ const {
   sendContactMessage,
 } = require("../controllers/siteController");
 const { strictAuthLimiter } = require("../middleware/rateLimiters");
+const { cacheResponse } = require("../middleware/responseCache");
 
-router.get("/", getSiteContent);
+router.get(
+  "/",
+  cacheResponse({ key: "site", ttlSeconds: 300 }),
+  getSiteContent,
+);
 router.get("/alerts/status", auth, isAdmin, getAlertStatus);
 router.get("/alerts/push-status", auth, isAdmin, getPushAlertStatus);
 router.get("/alerts/preferences", auth, isAdmin, getAdminAlertPreferences);

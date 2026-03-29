@@ -285,6 +285,8 @@ orderSchema.pre("save", function (next) {
   next();
 });
 
+orderSchema.index({ status: 1, createdAt: -1 });
+
 const Order = mongoose.model("Order", orderSchema);
 
 module.exports = Order;

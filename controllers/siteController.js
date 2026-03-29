@@ -12,6 +12,7 @@ const {
   unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
 const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
+const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const { SITE_KEY } = require("../config/constants");
 const imageStorage = require("../services/cloudinaryStorage");
@@ -25,6 +26,17 @@ const getOrCreateSiteContent = async () => {
   }
 
   return content;
+};
+
+const invalidatePublicCache = async (context = {}) => {
+  try {
+    await clearPublicApiCache();
+  } catch (error) {
+    logger.warn("Failed to clear public API cache after site mutation", {
+      error: error?.message || String(error),
+      ...context,
+    });
+  }
 };
 
 exports.getSiteContent = async (req, res) => {
@@ -73,6 +85,7 @@ exports.updateSettings = async (req, res) => {
       },
     );
 
+    await invalidatePublicCache({ action: "updateSettings" });
     emitAdminDataUpdated("settings", { action: "updated" });
     res.json(content);
   } catch (error) {
@@ -111,6 +124,7 @@ exports.updateCategoryOrder = async (req, res) => {
       },
     );
 
+    await invalidatePublicCache({ action: "updateCategoryOrder" });
     emitAdminDataUpdated("settings", { action: "category-order-updated" });
     return res.json({
       message: "Category order updated successfully",
@@ -152,6 +166,7 @@ exports.addGalleryItem = async (req, res) => {
     });
 
     await content.save();
+    await invalidatePublicCache({ action: "addGalleryItem" });
     emitAdminDataUpdated("settings", { action: "gallery-item-added" });
     res.status(201).json(content.galleryItems[0]);
   } catch (error) {
@@ -178,6 +193,7 @@ exports.deleteGalleryItem = async (req, res) => {
 
     galleryItem.deleteOne();
     await content.save();
+    await invalidatePublicCache({ action: "deleteGalleryItem" });
     emitAdminDataUpdated("settings", { action: "gallery-item-deleted" });
 
     res.json({

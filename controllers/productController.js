@@ -1,8 +1,65 @@
 const Product = require("../models/Product");
 const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const imageStorage = require("../services/cloudinaryStorage");
+const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const logger = require("../utils/logger");
+
+const CLOUDINARY_DELIVERY_TRANSFORMS = "f_auto,q_auto,w_800";
+
+const optimizeCloudinaryImageUrl = (imageUrl) => {
+  const source = String(imageUrl || "").trim();
+  if (!/^https?:\/\/res\.cloudinary\.com\//i.test(source)) {
+    return source;
+  }
+
+  try {
+    const parsed = new URL(source);
+    const marker = "/image/upload/";
+    const markerIndex = parsed.pathname.indexOf(marker);
+    if (markerIndex < 0) {
+      return source;
+    }
+
+    const before = parsed.pathname.slice(0, markerIndex + marker.length);
+    const after = parsed.pathname.slice(markerIndex + marker.length);
+    if (
+      after.startsWith(`${CLOUDINARY_DELIVERY_TRANSFORMS}/`) ||
+      (after.includes("f_auto") &&
+        after.includes("q_auto") &&
+        after.includes("w_800"))
+    ) {
+      return source;
+    }
+
+    parsed.pathname = `${before}${CLOUDINARY_DELIVERY_TRANSFORMS}/${after.replace(/^\/+/, "")}`;
+    return parsed.toString();
+  } catch (_) {
+    return source;
+  }
+};
+
+const normalizeProductImagesForResponse = (product) => {
+  if (!product) {
+    return product;
+  }
+
+  const base = typeof product.toObject === "function" ? product.toObject() : product;
+  const normalizedImages = Array.isArray(base.images)
+    ? base.images.map((image) => optimizeCloudinaryImageUrl(image))
+    : [];
+  const normalizedImage = optimizeCloudinaryImageUrl(
+    base.image || normalizedImages[0] || "",
+  );
+
+  return {
+    ...base,
+    image: normalizedImage,
+    images: normalizedImages.length
+      ? normalizedImages
+      : [normalizedImage].filter(Boolean),
+  };
+};
 
 const saveImageFile = async (file) => {
   if (!file) {
@@ -648,6 +705,17 @@ const getNextDisplayOrder = async (category) => {
   return Math.max(0, Number(latestProduct?.displayOrder) || 0) + 1;
 };
 
+const invalidatePublicCache = async (context = {}) => {
+  try {
+    await clearPublicApiCache();
+  } catch (error) {
+    logger.warn("Failed to clear public API cache after product mutation", {
+      error: error?.message || String(error),
+      ...context,
+    });
+  }
+};
+
 // Get all products with optional filtering
 exports.getAllProducts = async (req, res) => {
   try {
@@ -685,7 +753,7 @@ exports.getAllProducts = async (req, res) => {
 
     const products = await Product.find(query).sort(sort);
 
-    res.json(products);
+    res.json(products.map((product) => normalizeProductImagesForResponse(product)));
   } catch (error) {
     res
       .status(500)
@@ -702,7 +770,7 @@ exports.getProduct = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    res.json(product);
+    res.json(normalizeProductImagesForResponse(product));
   } catch (error) {
     res
       .status(500)
@@ -742,11 +810,15 @@ exports.createProduct = async (req, res) => {
 
     const product = new Product(payload);
     await product.save();
+    await invalidatePublicCache({
+      action: "createProduct",
+      productId: product._id?.toString(),
+    });
     emitAdminDataUpdated("products", {
       action: "created",
       productId: product._id?.toString(),
     });
-    res.status(201).json(product);
+    res.status(201).json(normalizeProductImagesForResponse(product));
   } catch (error) {
     res
       .status(500)
@@ -820,11 +892,15 @@ exports.updateProduct = async (req, res) => {
       { new: true, runValidators: true },
     );
 
+    await invalidatePublicCache({
+      action: "updateProduct",
+      productId: product?._id?.toString(),
+    });
     emitAdminDataUpdated("products", {
       action: "updated",
       productId: product?._id?.toString(),
     });
-    res.json(product);
+    res.json(normalizeProductImagesForResponse(product));
   } catch (error) {
     res
       .status(500)
@@ -849,11 +925,15 @@ exports.updateProductInventory = async (req, res) => {
       { new: true, runValidators: true },
     );
 
+    await invalidatePublicCache({
+      action: "updateProductInventory",
+      productId: product?._id?.toString(),
+    });
     emitAdminDataUpdated("inventory", {
       action: "updated",
       productId: product?._id?.toString(),
     });
-    res.json(product);
+    res.json(normalizeProductImagesForResponse(product));
   } catch (error) {
     res.status(500).json({
       message: "Error updating product inventory",
@@ -902,6 +982,10 @@ exports.updateProductDisplayOrder = async (req, res) => {
       .sort({ displayOrder: 1, name: 1 })
       .lean();
 
+    await invalidatePublicCache({
+      action: "updateProductDisplayOrder",
+      category: normalizedCategory,
+    });
     emitAdminDataUpdated("inventory", {
       action: "display-order-updated",
       category: normalizedCategory,
@@ -909,7 +993,9 @@ exports.updateProductDisplayOrder = async (req, res) => {
     return res.json({
       message: "Product order updated successfully",
       category: normalizedCategory,
-      products: updatedProducts,
+      products: updatedProducts.map((product) =>
+        normalizeProductImagesForResponse(product),
+      ),
     });
   } catch (error) {
     logger.error("Failed to update product display order", {
@@ -938,6 +1024,10 @@ exports.deleteProduct = async (req, res) => {
         : [product.image].filter(Boolean),
     );
 
+    await invalidatePublicCache({
+      action: "deleteProduct",
+      productId: req.params.id,
+    });
     emitAdminDataUpdated("products", {
       action: "deleted",
       productId: req.params.id,
@@ -968,6 +1058,11 @@ exports.renameCategory = async (req, res) => {
       { category: oldName.trim().toLowerCase() },
       { $set: { category: trimmed } },
     );
+    await invalidatePublicCache({
+      action: "renameCategory",
+      oldName,
+      newName: trimmed,
+    });
     emitAdminDataUpdated("products", {
       action: "category-renamed",
       oldName,
@@ -994,6 +1089,10 @@ exports.deleteCategory = async (req, res) => {
       { category: name.trim().toLowerCase() },
       { $set: { category: "cakes" } },
     );
+    await invalidatePublicCache({
+      action: "deleteCategory",
+      name,
+    });
     emitAdminDataUpdated("products", {
       action: "category-deleted",
       name,
