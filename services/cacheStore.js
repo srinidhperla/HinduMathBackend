@@ -86,9 +86,14 @@ const findRedisKeysByPrefix = async (prefix) => {
 const initCache = async () => {
   initializeMemoryCleanup();
   const redisUrl = String(process.env.REDIS_URL || "").trim();
+  const redisUrlPreview = redisUrl
+    ? `${redisUrl.slice(0, 20)}${redisUrl.length > 20 ? "..." : ""}`
+    : "not-set";
+
+  logger.info(`REDIS_URL preview: ${redisUrlPreview}`);
 
   if (!redisUrl) {
-    logger.info("REDIS_URL not configured. Using in-memory cache.");
+    logger.info("Redis not available using memory cache");
     return;
   }
 
@@ -109,24 +114,29 @@ const initCache = async () => {
 
     redisClient.on("ready", () => {
       redisReady = true;
-      logger.info("Redis cache connected.");
     });
 
     redisClient.on("end", () => {
       redisReady = false;
-      logger.warn("Redis cache disconnected. Using memory cache fallback.");
+      logger.warn("Redis not available using memory cache");
     });
 
     await redisClient.connect();
     redisReady = true;
+    logger.info("Redis connected successfully");
   } catch (error) {
     redisClient = null;
     redisReady = false;
-    logger.warn("Redis unavailable. Using in-memory cache fallback.", {
+    logger.warn("Redis not available using memory cache", {
       error: error?.message || String(error),
     });
   }
 };
+
+const getCacheStatus = () => ({
+  cache: redisReady && redisClient ? "redis" : "memory",
+  redisConnected: Boolean(redisReady && redisClient),
+});
 
 const getCachedJson = async (key) => {
   const cacheKey = buildCacheKey(key);
@@ -199,6 +209,7 @@ module.exports = {
   DEFAULT_TTL_SECONDS,
   clearPublicApiCache,
   getCachedJson,
+  getCacheStatus,
   initCache,
   setCachedJson,
 };

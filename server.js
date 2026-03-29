@@ -25,7 +25,7 @@ const {
   startOrderReminderService,
 } = require("./services/orderReminderService");
 const { setOrderEventSocketServer } = require("./services/orderEvents");
-const { initCache } = require("./services/cacheStore");
+const { initCache, getCacheStatus } = require("./services/cacheStore");
 
 validateEnv();
 
@@ -172,13 +172,12 @@ app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });
 app.get("/api/health", (req, res) => {
+  const cacheStatus = getCacheStatus();
+
   res.json({
-    ok: true,
-    onlinePaymentsConfigured: Boolean(
-      (process.env.RAZORPAY_KEY || process.env.RAZORPAY_KEY_ID) &&
-        process.env.RAZORPAY_KEY_SECRET,
-    ),
-    timestamp: new Date().toISOString(),
+    status: "ok",
+    cache: cacheStatus.cache,
+    redisConnected: cacheStatus.redisConnected,
   });
 });
 
