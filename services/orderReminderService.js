@@ -18,6 +18,8 @@ const PUSH_REPEAT_CAP_MS = 10 * 60 * 1000;
 
 let reminderIntervalHandle = null;
 const recurringPushIntervalsByOrderId = new Map();
+const getOrderEmailReference = (order) =>
+  String(order?.orderCode || "").trim() || String(order?._id || "").trim();
 
 const resolveAdminReminderEmail = async () => {
   if (process.env.ADMIN_ALERT_EMAIL) {
@@ -45,6 +47,7 @@ const getAdminReminderEmail = async () => {
 
 const buildReminderEmail = (order) => {
   const customerName = order.user?.name || "Customer";
+  const orderReference = getOrderEmailReference(order);
   const itemSummary = (order.items || [])
     .map((item) => {
       const parts = [
@@ -70,15 +73,12 @@ const buildReminderEmail = (order) => {
     .filter(Boolean)
     .join(", ");
 
-  const subject = `Pending bakery order needs acceptance #${order._id
-    .toString()
-    .slice(-6)
-    .toUpperCase()}`;
+  const subject = `Pending bakery order needs acceptance ${orderReference}`;
 
   const text = [
     `A new order is still pending and has not been accepted yet.`,
     ``,
-    `Order ID: ${order._id}`,
+    `Order ID: ${orderReference}`,
     `Customer: ${customerName}`,
     `Phone: ${order.user?.phone || "Not provided"}`,
     `Payment: ${order.paymentMethod || "Not specified"}`,

@@ -53,6 +53,14 @@ const REJECTION_REASON_LABELS = {
   shopClosed: "Shop closed",
   other: "Other",
 };
+const ORDER_STATUS_EMAIL_LABELS = {
+  pending: "Pending",
+  confirmed: "Confirmed",
+  preparing: "Preparing",
+  ready: "Out for Delivery",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+};
 
 const generateNextOrderCode = async () => {
   const counter = await Counter.findByIdAndUpdate(
@@ -213,6 +221,8 @@ const formatAddressLabel = (address = {}) =>
     .join(", ");
 
 const trimText = (value) => String(value ?? "").trim();
+const getOrderEmailReference = (order) =>
+  trimText(order?.orderCode) || String(order?._id || "");
 
 const formatEggTypeLabel = (eggType = "") => {
   if (String(eggType).toLowerCase() === "eggless") {
@@ -436,15 +446,16 @@ const sendOrderPlacedEmail = async (order) => {
   const itemSummary = buildOrderItemSummary(order);
   const requestedDelivery = getRequestedDeliveryLabel(order);
   const customerEmail = order?.user?.email;
+  const orderReference = getOrderEmailReference(order);
 
   return sendCustomerEmailSafely({
     to: customerEmail,
-    subject: `We received your order ${order.orderCode || order._id}`,
+    subject: `We received your order ${orderReference}`,
     text: [
       `Hi ${order.user?.name || "Customer"},`,
       "",
       "Your order has been placed successfully and is waiting for bakery confirmation.",
-      `Order ID: ${order.orderCode || order._id}`,
+      `Order ID: ${orderReference}`,
       `Requested delivery: ${requestedDelivery}`,
       `Delivery address: ${formatAddressLabel(order.deliveryAddress)}`,
       `Total amount: Rs.${Number(order.totalAmount || 0).toLocaleString("en-IN")}`,
@@ -466,15 +477,16 @@ const sendOrderAcceptedEmail = async (order) => {
     getEstimatedDeliveryLabel(order) || "Will be shared soon";
   const requestedDelivery = getRequestedDeliveryLabel(order);
   const adminMessage = String(order?.acceptanceMessage || "").trim();
+  const orderReference = getOrderEmailReference(order);
 
   return sendCustomerEmailSafely({
     to: order?.user?.email,
-    subject: `Your order ${order.orderCode || order._id} is confirmed`,
+    subject: `Your order ${orderReference} is confirmed`,
     text: [
       `Hi ${order.user?.name || "Customer"},`,
       "",
       "Your order has been accepted by the bakery.",
-      `Order ID: ${order.orderCode || order._id}`,
+      `Order ID: ${orderReference}`,
       `Requested delivery: ${requestedDelivery}`,
       `Estimated delivery time: ${estimatedLabel}`,
       adminMessage ? `Message from bakery: ${adminMessage}` : "",
@@ -494,15 +506,16 @@ const sendOrderRejectedEmail = async (order) => {
   const rejectionReason =
     REJECTION_REASON_LABELS[order?.rejectionReason] ||
     String(order?.rejectionReason || "Order unavailable");
+  const orderReference = getOrderEmailReference(order);
 
   return sendCustomerEmailSafely({
     to: order?.user?.email,
-    subject: `Your order ${order.orderCode || order._id} was rejected`,
+    subject: `Your order ${orderReference} was rejected`,
     text: [
       `Hi ${order.user?.name || "Customer"},`,
       "",
       "We are sorry, but the bakery could not accept your order.",
-      `Order ID: ${order.orderCode || order._id}`,
+      `Order ID: ${orderReference}`,
       `Reason: ${rejectionReason}`,
       order?.rejectionMessage
         ? `Message from bakery: ${order.rejectionMessage}`
@@ -515,6 +528,49 @@ const sendOrderRejectedEmail = async (order) => {
     context: {
       orderId: String(order?._id || ""),
       event: "order-rejected",
+    },
+  });
+};
+
+const sendOrderStatusProgressEmail = async (order, previousStatus = "") => {
+  const nextStatus = String(order?.status || "").trim().toLowerCase();
+  const previous = String(previousStatus || "").trim().toLowerCase();
+
+  if (!nextStatus || nextStatus === previous) {
+    return { skipped: true, reason: "status-unchanged" };
+  }
+
+  if (["confirmed", "cancelled"].includes(nextStatus)) {
+    return { skipped: true, reason: "handled-by-specific-template" };
+  }
+
+  const orderReference = getOrderEmailReference(order);
+  const statusLabel =
+    ORDER_STATUS_EMAIL_LABELS[nextStatus] ||
+    nextStatus.charAt(0).toUpperCase() + nextStatus.slice(1);
+  const requestedDelivery = getRequestedDeliveryLabel(order);
+  const estimatedLabel = getEstimatedDeliveryLabel(order);
+
+  return sendCustomerEmailSafely({
+    to: order?.user?.email,
+    subject: `Update: your order ${orderReference} is now ${statusLabel}`,
+    text: [
+      `Hi ${order.user?.name || "Customer"},`,
+      "",
+      `Your order status has been updated to: ${statusLabel}.`,
+      `Order ID: ${orderReference}`,
+      `Requested delivery: ${requestedDelivery}`,
+      estimatedLabel ? `Estimated delivery: ${estimatedLabel}` : "",
+      "",
+      "Thank you for ordering with Hindumatha's Cake World.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    context: {
+      orderId: String(order?._id || ""),
+      event: "order-status-progress",
+      previousStatus: previous,
+      nextStatus,
     },
   });
 };
@@ -1546,6 +1602,15 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
+    if (previousStatus !== status) {
+      sendOrderStatusProgressEmail(order, previousStatus).catch((error) => {
+        logger.error("Order status progress email failed", {
+          orderId: order._id,
+          error: error.message,
+        });
+      });
+    }
+
     return res.json(order);
   } catch (error) {
     return res
@@ -1813,6 +1878,9 @@ exports.updateDeliveryStatus = async (req, res) => {
       return res.status(404).json({ message: "Order not found" });
     }
 
+    const previousStatus = String(order.status || "");
+    const previousDeliveryStatus = String(order.deliveryStatus || "");
+
     if (
       !order.assignedDeliveryPartner ||
       order.assignedDeliveryPartner.toString() !== req.user._id.toString()
@@ -1863,6 +1931,19 @@ exports.updateDeliveryStatus = async (req, res) => {
     await order.populate("assignedDeliveryPartner", "name phone");
 
     emitOrderEvent("order-status-updated", order.toObject());
+
+    if (
+      previousDeliveryStatus.toLowerCase() !==
+        String(order.deliveryStatus || "").toLowerCase() ||
+      previousStatus.toLowerCase() !== String(order.status || "").toLowerCase()
+    ) {
+      sendOrderStatusProgressEmail(order, previousStatus).catch((error) => {
+        logger.error("Order status progress email failed", {
+          orderId: order._id,
+          error: error.message,
+        });
+      });
+    }
 
     return res.json(order);
   } catch (error) {
