@@ -6,12 +6,50 @@ const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const logger = require("../utils/logger");
 
+const isPlainObject = (value) => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+const flattenMapsDeep = (value) => {
+  if (value instanceof Map) {
+    return Object.fromEntries(
+      Array.from(value.entries()).map(([key, entryValue]) => [
+        key,
+        flattenMapsDeep(entryValue),
+      ]),
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => flattenMapsDeep(entry));
+  }
+
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [
+        key,
+        flattenMapsDeep(entryValue),
+      ]),
+    );
+  }
+
+  return value;
+};
+
 const normalizeProductImagesForResponse = (product) => {
   if (!product) {
     return product;
   }
 
-  const base = typeof product.toObject === "function" ? product.toObject() : product;
+  const base =
+    typeof product.toObject === "function"
+      ? flattenMapsDeep(product.toObject({ flattenMaps: true }))
+      : flattenMapsDeep(product);
   const normalizedImages = Array.isArray(base.images)
     ? base.images.map((image) => imageStorage.optimizeDeliveryUrl(image))
     : [];
@@ -521,12 +559,12 @@ const normalizeProductPayload = (body) => {
   const hasTypedVariantRows = Object.keys(variantPrices || {}).length > 0;
   const basePrice = Number(body.price);
   const normalizedBasePrice =
-    minimumVariantPrice !== null
-      ? minimumVariantPrice
-      : hasTypedVariantRows
-        ? 0
-        : Number.isFinite(basePrice) && basePrice > 0
-          ? basePrice
+    Number.isFinite(basePrice) && basePrice >= 0
+      ? basePrice
+      : minimumVariantPrice !== null
+        ? minimumVariantPrice
+        : hasTypedVariantRows
+          ? 0
           : 0;
 
   return {
@@ -633,11 +671,13 @@ const normalizeInventoryPayload = (body, existingProduct) => {
     flavorWeightAvailability: normalizedFlavorWeightAvailability,
     variantPrices,
     price:
-      minimumVariantPrice !== null
-        ? minimumVariantPrice
-        : hasTypedVariantRows
-          ? 0
-          : Number(existingProduct.price) || 0,
+      Number.isFinite(Number(body.price)) && Number(body.price) >= 0
+        ? Number(body.price)
+        : minimumVariantPrice !== null
+          ? minimumVariantPrice
+          : hasTypedVariantRows
+            ? Number(existingProduct.price) || 0
+            : Number(existingProduct.price) || 0,
   };
 };
 
