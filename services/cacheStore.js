@@ -1,4 +1,4 @@
-const { createClient } = require("redis");
+const { Redis } = require("@upstash/redis");
 const logger = require("../utils/logger");
 
 const DEFAULT_TTL_SECONDS = 300;
@@ -64,64 +64,138 @@ const initializeMemoryCleanup = () => {
   }
 };
 
+const normalizeRedisUrl = (value = "") => {
+  const source = String(value || "").trim();
+  if (!source) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(source);
+    if (parsed.protocol === "redis:") {
+      parsed.protocol = "rediss:";
+    }
+    return parsed.toString();
+  } catch {
+    return source.replace(/^redis:\/\//i, "rediss://");
+  }
+};
+
+const toRedisUrlPreview = (value = "") => {
+  const source = String(value || "").trim();
+  if (!source) {
+    return "not-set";
+  }
+
+  return `${source.slice(0, 20)}${source.length > 20 ? "..." : ""}`;
+};
+
+const resolveUpstashCredentials = (normalizedRedisUrl) => {
+  const explicitRestUrl = String(
+    process.env.UPSTASH_REDIS_REST_URL || "",
+  ).trim();
+  const explicitRestToken = String(
+    process.env.UPSTASH_REDIS_REST_TOKEN || "",
+  ).trim();
+
+  if (explicitRestUrl && explicitRestToken) {
+    return {
+      url: explicitRestUrl,
+      token: explicitRestToken,
+    };
+  }
+
+  if (!normalizedRedisUrl) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(normalizedRedisUrl);
+    if (!String(parsed.hostname || "").toLowerCase().endsWith("upstash.io")) {
+      return null;
+    }
+
+    const inferredToken = decodeURIComponent(parsed.password || "").trim();
+    if (!inferredToken) {
+      return null;
+    }
+
+    return {
+      url: `https://${parsed.hostname}`,
+      token: inferredToken,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const isRedisAvailable = () => redisReady && redisClient;
+
+const normalizeScanResponse = (response) => {
+  if (Array.isArray(response)) {
+    const [cursor, keys] = response;
+    return {
+      cursor: Number(cursor) || 0,
+      keys: Array.isArray(keys) ? keys : [],
+    };
+  }
+
+  return {
+    cursor: Number(response?.cursor) || 0,
+    keys: Array.isArray(response?.keys) ? response.keys : [],
+  };
+};
+
 const findRedisKeysByPrefix = async (prefix) => {
-  if (!redisReady || !redisClient) {
+  if (!isRedisAvailable()) {
     return [];
   }
 
   const keys = [];
-  let cursor = "0";
+  let cursor = 0;
   do {
-    const result = await redisClient.scan(cursor, {
-      MATCH: `${prefix}*`,
-      COUNT: 100,
+    const response = await redisClient.scan(cursor, {
+      match: `${prefix}*`,
+      count: 100,
     });
-    cursor = result.cursor;
-    keys.push(...(result.keys || []));
-  } while (cursor !== "0");
+    const normalized = normalizeScanResponse(response);
+    cursor = normalized.cursor;
+    keys.push(...normalized.keys);
+  } while (cursor !== 0);
 
   return keys;
 };
 
+const deleteRedisKeys = async (keys = []) => {
+  const normalizedKeys = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
+  if (!normalizedKeys.length || !isRedisAvailable()) {
+    return;
+  }
+
+  await redisClient.del(...normalizedKeys);
+};
+
 const initCache = async () => {
   initializeMemoryCleanup();
-  const redisUrl = String(process.env.REDIS_URL || "").trim();
-  const redisUrlPreview = redisUrl
-    ? `${redisUrl.slice(0, 20)}${redisUrl.length > 20 ? "..." : ""}`
-    : "not-set";
 
-  logger.info(`REDIS_URL preview: ${redisUrlPreview}`);
+  const rawRedisUrl = String(process.env.REDIS_URL || "").trim();
+  const normalizedRedisUrl = normalizeRedisUrl(rawRedisUrl);
+  logger.info(`REDIS_URL preview: ${toRedisUrlPreview(normalizedRedisUrl)}`);
 
-  if (!redisUrl) {
+  const upstashCredentials = resolveUpstashCredentials(normalizedRedisUrl);
+  if (!upstashCredentials) {
+    redisClient = null;
+    redisReady = false;
     logger.info("Redis not available using memory cache");
     return;
   }
 
   try {
-    redisClient = createClient({
-      url: redisUrl,
-      socket: {
-        reconnectStrategy: (retries) => Math.min(retries * 100, 2000),
-      },
+    redisClient = new Redis({
+      url: upstashCredentials.url,
+      token: upstashCredentials.token,
     });
-
-    redisClient.on("error", (error) => {
-      redisReady = false;
-      logger.warn("Redis cache error. Falling back to memory cache.", {
-        error: error?.message || String(error),
-      });
-    });
-
-    redisClient.on("ready", () => {
-      redisReady = true;
-    });
-
-    redisClient.on("end", () => {
-      redisReady = false;
-      logger.warn("Redis not available using memory cache");
-    });
-
-    await redisClient.connect();
+    await redisClient.ping();
     redisReady = true;
     logger.info("Redis connected successfully");
   } catch (error) {
@@ -134,21 +208,33 @@ const initCache = async () => {
 };
 
 const getCacheStatus = () => ({
-  cache: redisReady && redisClient ? "redis" : "memory",
-  redisConnected: Boolean(redisReady && redisClient),
+  cache: isRedisAvailable() ? "redis" : "memory",
+  redisConnected: Boolean(isRedisAvailable()),
 });
+
+const parseCachedPayload = (rawValue) => {
+  if (rawValue === null || rawValue === undefined || rawValue === "") {
+    return null;
+  }
+
+  if (typeof rawValue === "string") {
+    return JSON.parse(rawValue);
+  }
+
+  if (typeof rawValue === "object") {
+    return rawValue;
+  }
+
+  return JSON.parse(String(rawValue));
+};
 
 const getCachedJson = async (key) => {
   const cacheKey = buildCacheKey(key);
 
-  if (redisReady && redisClient) {
+  if (isRedisAvailable()) {
     try {
       const raw = await redisClient.get(cacheKey);
-      if (!raw) {
-        return null;
-      }
-
-      return JSON.parse(raw);
+      return parseCachedPayload(raw);
     } catch (error) {
       logger.warn("Redis read failed. Falling back to memory cache.", {
         key: cacheKey,
@@ -162,14 +248,13 @@ const getCachedJson = async (key) => {
 
 const setCachedJson = async (key, payload, ttlSeconds = DEFAULT_TTL_SECONDS) => {
   const cacheKey = buildCacheKey(key);
+  const safeTtl = Number(ttlSeconds || DEFAULT_TTL_SECONDS);
 
-  if (redisReady && redisClient) {
+  if (isRedisAvailable()) {
     try {
-      await redisClient.setEx(
-        cacheKey,
-        Number(ttlSeconds || DEFAULT_TTL_SECONDS),
-        JSON.stringify(payload),
-      );
+      await redisClient.set(cacheKey, JSON.stringify(payload), {
+        ex: safeTtl,
+      });
       return;
     } catch (error) {
       logger.warn("Redis write failed. Storing in memory cache.", {
@@ -179,7 +264,7 @@ const setCachedJson = async (key, payload, ttlSeconds = DEFAULT_TTL_SECONDS) => 
     }
   }
 
-  setMemoryEntry(cacheKey, payload, ttlSeconds);
+  setMemoryEntry(cacheKey, payload, safeTtl);
 };
 
 const clearPublicApiCache = async () => {
@@ -187,7 +272,7 @@ const clearPublicApiCache = async () => {
 
   removeByPrefixes(prefixes);
 
-  if (!redisReady || !redisClient) {
+  if (!isRedisAvailable()) {
     return;
   }
 
@@ -195,7 +280,7 @@ const clearPublicApiCache = async () => {
     for (const prefix of prefixes) {
       const keys = await findRedisKeysByPrefix(prefix);
       if (keys.length) {
-        await redisClient.del(keys);
+        await deleteRedisKeys(keys);
       }
     }
   } catch (error) {
