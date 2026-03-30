@@ -2,6 +2,26 @@ const Order = require("../models/Order");
 const User = require("../models/User");
 const { emitOrderEvent } = require("../services/orderEvents");
 
+const syncOrderPaymentStatus = (order) => {
+  const paymentMethod = String(order?.paymentMethod || "").toLowerCase();
+  const status = String(order?.status || "").toLowerCase();
+  const isOnlinePayment = paymentMethod === "upi" || paymentMethod === "card";
+
+  if (status === "cancelled") {
+    order.paymentStatus = "failed";
+    return;
+  }
+
+  if (isOnlinePayment) {
+    order.paymentStatus = "completed";
+    return;
+  }
+
+  if (paymentMethod === "cash") {
+    order.paymentStatus = status === "delivered" ? "completed" : "pending";
+  }
+};
+
 exports.getAlertOrders = async (req, res) => {
   try {
     const { status, limit } = req.query;
@@ -81,9 +101,6 @@ exports.updateAlertDeliveryStatus = async (req, res) => {
         ];
       }
       order.status = "delivered";
-      if (order.paymentMethod === "cash" && order.paymentStatus === "pending") {
-        order.paymentStatus = "completed";
-      }
     } else if (deliveryStatus === "outForDelivery") {
       if (order.status !== "ready") {
         order.statusTimeline = [
@@ -100,6 +117,7 @@ exports.updateAlertDeliveryStatus = async (req, res) => {
 
     order.deliveryStatus =
       deliveryStatus === "delivered" ? "delivered" : "outForDelivery";
+    syncOrderPaymentStatus(order);
 
     await order.save();
     await order.populate("items.product");

@@ -57,7 +57,7 @@ const ORDER_STATUS_EMAIL_LABELS = {
   pending: "Pending",
   confirmed: "Confirmed",
   preparing: "Preparing",
-  ready: "Out for Delivery",
+  ready: "Ready",
   delivered: "Delivered",
   cancelled: "Cancelled",
 };

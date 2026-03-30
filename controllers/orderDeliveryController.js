@@ -7,13 +7,12 @@ const toSafeSortDirection = (value) =>
 const buildDeliveryOrdersQuery = (deliveryPartnerId, statusFilter = []) => {
   const baseQuery = {
     assignedDeliveryPartner: deliveryPartnerId,
-    deliveryStatus: { $ne: "delivered" },
   };
 
   if (Array.isArray(statusFilter) && statusFilter.length > 0) {
     baseQuery.status = { $in: statusFilter };
   } else {
-    baseQuery.status = { $in: ["confirmed", "preparing", "ready"] };
+    baseQuery.status = { $in: ["confirmed", "preparing", "ready", "delivered"] };
   }
 
   return baseQuery;
@@ -65,4 +64,3 @@ module.exports = {
   getDeliveryPartners,
   getDeliveryPartnerOrders,
 };
-

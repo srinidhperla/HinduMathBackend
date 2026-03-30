@@ -21,6 +21,26 @@ const populateOrderDetails = async (order) => {
   await order.populate("assignedDeliveryPartner", "name phone");
 };
 
+const syncOrderPaymentStatus = (order) => {
+  const paymentMethod = String(order?.paymentMethod || "").toLowerCase();
+  const status = String(order?.status || "").toLowerCase();
+  const isOnlinePayment = paymentMethod === "upi" || paymentMethod === "card";
+
+  if (status === "cancelled") {
+    order.paymentStatus = "failed";
+    return;
+  }
+
+  if (isOnlinePayment) {
+    order.paymentStatus = "completed";
+    return;
+  }
+
+  if (paymentMethod === "cash") {
+    order.paymentStatus = status === "delivered" ? "completed" : "pending";
+  }
+};
+
 const updateOrderStatus = async (req, res) => {
   try {
     const {
@@ -116,14 +136,21 @@ const updateOrderStatus = async (req, res) => {
       order.acceptanceMessage = "";
       order.deliveryStatus = "pending";
       order.assignedDeliveryPartner = null;
-      if (order.paymentStatus === "pending") {
-        order.paymentStatus = "failed";
-      }
     }
 
     if (status === "pending") {
       order.pendingReminderEscalatedAt = null;
     }
+
+    if (status === "delivered") {
+      order.deliveryStatus = "delivered";
+    } else if (status === "ready") {
+      order.deliveryStatus = "outForDelivery";
+    } else if (status !== "cancelled") {
+      order.deliveryStatus = "pending";
+    }
+
+    syncOrderPaymentStatus(order);
 
     await order.save();
     if (status !== "pending") {
@@ -204,9 +231,7 @@ const cancelOrder = async (req, res) => {
     }
 
     order.status = "cancelled";
-    if (order.paymentStatus === "pending") {
-      order.paymentStatus = "failed";
-    }
+    syncOrderPaymentStatus(order);
     await order.save();
     clearOrderReminderRetries(order._id);
     await populateOrderDetails(order);
@@ -253,9 +278,6 @@ const updateDeliveryStatus = async (req, res) => {
       }
       order.status = "delivered";
       order.deliveryStatus = "delivered";
-      if (order.paymentMethod === "cash" && order.paymentStatus === "pending") {
-        order.paymentStatus = "completed";
-      }
     } else {
       if (order.status !== "ready") {
         order.statusTimeline = [
@@ -266,6 +288,8 @@ const updateDeliveryStatus = async (req, res) => {
       order.status = "ready";
       order.deliveryStatus = "outForDelivery";
     }
+
+    syncOrderPaymentStatus(order);
 
     await order.save();
     await populateOrderDetails(order);
@@ -298,4 +322,3 @@ module.exports = {
   cancelOrder,
   updateDeliveryStatus,
 };
-
