@@ -20,12 +20,16 @@ const {
   getProduct,
   createProduct,
   updateProduct,
+  deleteProduct,
+} = require("../controllers/productController");
+const {
   updateProductInventory,
   updateProductDisplayOrder,
-  deleteProduct,
+} = require("../controllers/productInventoryController");
+const {
   renameCategory,
   deleteCategory,
-} = require("../controllers/productController");
+} = require("../controllers/productCategoryController");
 
 // Public routes
 router.get(

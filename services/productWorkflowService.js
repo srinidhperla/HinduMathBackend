@@ -1,9 +1,9 @@
-const Product = require("../../models/Product");
-const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../../config/constants");
-const imageStorage = require("../../services/cloudinaryStorage");
-const { clearPublicApiCache } = require("../../services/cacheStore");
-const { emitAdminDataUpdated } = require("../../services/orderEvents");
-const logger = require("../../utils/logger");
+const Product = require("../models/Product");
+const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
+const imageStorage = require("../services/cloudinaryStorage");
+const { clearPublicApiCache } = require("../services/cacheStore");
+const { emitAdminDataUpdated } = require("../services/orderEvents");
+const logger = require("../utils/logger");
 
 const CLOUDINARY_DELIVERY_TRANSFORMS = "f_auto,q_auto,w_800";
 
@@ -1107,4 +1107,15 @@ exports.deleteCategory = async (req, res) => {
       .json({ message: "Error deleting category", error: error.message });
   }
 };
+
+exports.normalizeProductImagesForResponse = normalizeProductImagesForResponse;
+exports.normalizeProductPayload = normalizeProductPayload;
+exports.normalizeInventoryPayload = normalizeInventoryPayload;
+exports.parseObjectArrayField = parseObjectArrayField;
+exports.parseArrayField = parseArrayField;
+exports.saveImageFiles = saveImageFiles;
+exports.deleteImageFiles = deleteImageFiles;
+exports.buildOrderedImages = buildOrderedImages;
+exports.getNextDisplayOrder = getNextDisplayOrder;
+exports.invalidatePublicCache = invalidatePublicCache;
 

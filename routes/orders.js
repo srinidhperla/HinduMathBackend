@@ -15,17 +15,23 @@ const {
   createOrder,
   createPaymentOrder,
   verifyPaymentAndCreateOrder,
+} = require("../controllers/orderController");
+const {
   getUserOrders,
   getOrder,
   getAllOrders,
   getOrderAnalytics,
+  streamOrders,
+} = require("../controllers/orderQueryController");
+const {
   getDeliveryPartners,
+  getDeliveryPartnerOrders,
+} = require("../controllers/orderDeliveryController");
+const {
   updateOrderStatus,
   cancelOrder,
-  getDeliveryPartnerOrders,
   updateDeliveryStatus,
-  streamOrders,
-} = require("../controllers/orderController");
+} = require("../controllers/orderStatusController");
 
 // User routes (require authentication)
 router.get("/stream", auth, isAdmin, standardReadLimiter, streamOrders);

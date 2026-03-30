@@ -9,7 +9,7 @@ const {
   getAlertDeliveryPartners,
   updateAlertDeliveryStatus,
 } = require("../controllers/alertController");
-const { updateOrderStatus } = require("../controllers/orderController");
+const { updateOrderStatus } = require("../controllers/orderStatusController");
 
 const router = express.Router();
 

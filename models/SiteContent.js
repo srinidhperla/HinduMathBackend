@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { GALLERY_IMAGE_URLS } = require("../config/galleryImages");
 
 const galleryItemSchema = new mongoose.Schema(
   {
@@ -332,56 +333,56 @@ const siteContentSchema = new mongoose.Schema(
           title: "Wedding Elegance",
           description: "Three-tier floral wedding cake",
           category: "Wedding",
-          imageUrl: "/images/gallery/cake1.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake1,
           likes: 234,
         },
         {
           title: "Birthday Fun",
           description: "Colorful birthday cake with drip",
           category: "Birthday",
-          imageUrl: "/images/gallery/cake2.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake2,
           likes: 189,
         },
         {
           title: "Chocolate Indulgence",
           description: "Rich dark chocolate cake with ganache drip",
           category: "Custom",
-          imageUrl: "/images/gallery/cake3.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake3,
           likes: 312,
         },
         {
           title: "Fresh Fruit Delight",
           description: "Light vanilla sponge topped with fresh fruits",
           category: "Custom",
-          imageUrl: "/images/gallery/cake4.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake4,
           likes: 156,
         },
         {
           title: "Red Velvet Dream",
           description: "Classic red velvet with cream cheese frosting",
           category: "Birthday",
-          imageUrl: "/images/gallery/cake5.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake5,
           likes: 278,
         },
         {
           title: "Golden Anniversary",
           description: "Luxurious gold-themed celebration cake",
           category: "Wedding",
-          imageUrl: "/images/gallery/cake6.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake6,
           likes: 198,
         },
         {
           title: "Party Confetti Cake",
           description: "Funfetti cake with rainbow sprinkles",
           category: "Birthday",
-          imageUrl: "/images/gallery/cake7.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake7,
           likes: 167,
         },
         {
           title: "Gourmet Cupcake Collection",
           description: "Assorted premium cupcakes and toppings",
           category: "Cupcakes",
-          imageUrl: "/images/gallery/cake8.jpg",
+          imageUrl: GALLERY_IMAGE_URLS.cake8,
           likes: 245,
         },
       ],
