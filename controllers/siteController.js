@@ -16,6 +16,7 @@ const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const { SITE_KEY } = require("../config/constants");
 const imageStorage = require("../services/cloudinaryStorage");
+const { processUploadedImage } = require("../services/imageProcessing");
 const logger = require("../utils/logger");
 
 const getOrCreateSiteContent = async () => {
@@ -143,14 +144,14 @@ exports.addGalleryItem = async (req, res) => {
     const { title, description, category, likes } = req.body;
     let imageUrl = req.body.imageUrl || "";
 
-    // If an image file was uploaded, store it in Appwrite
+    // Process uploaded images before storage so gallery assets stay lightweight.
     if (req.file) {
-      const ext = (req.file.originalname.match(/\.[^.]+$/) || [".jpg"])[0];
-      const fileName = `gallery-${Date.now()}${ext}`;
+      const processedImage = await processUploadedImage(req.file);
+      const fileName = `gallery-${Date.now()}-${processedImage.fileName}`;
       const result = await imageStorage.uploadFile(
-        req.file.buffer,
+        processedImage.buffer,
         fileName,
-        req.file.mimetype,
+        processedImage.mimeType,
       );
       imageUrl = result.url;
     }
@@ -168,7 +169,10 @@ exports.addGalleryItem = async (req, res) => {
     await content.save();
     await invalidatePublicCache({ action: "addGalleryItem" });
     emitAdminDataUpdated("settings", { action: "gallery-item-added" });
-    res.status(201).json(content.galleryItems[0]);
+    res.status(201).json({
+      ...content.galleryItems[0].toObject(),
+      imageUrl: imageStorage.optimizeDeliveryUrl(content.galleryItems[0].imageUrl),
+    });
   } catch (error) {
     res
       .status(500)

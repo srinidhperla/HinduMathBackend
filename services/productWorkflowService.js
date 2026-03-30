@@ -1,43 +1,10 @@
 const Product = require("../models/Product");
 const { DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const imageStorage = require("../services/cloudinaryStorage");
+const { processUploadedImage } = require("../services/imageProcessing");
 const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const logger = require("../utils/logger");
-
-const CLOUDINARY_DELIVERY_TRANSFORMS = "f_auto,q_auto,w_800";
-
-const optimizeCloudinaryImageUrl = (imageUrl) => {
-  const source = String(imageUrl || "").trim();
-  if (!/^https?:\/\/res\.cloudinary\.com\//i.test(source)) {
-    return source;
-  }
-
-  try {
-    const parsed = new URL(source);
-    const marker = "/image/upload/";
-    const markerIndex = parsed.pathname.indexOf(marker);
-    if (markerIndex < 0) {
-      return source;
-    }
-
-    const before = parsed.pathname.slice(0, markerIndex + marker.length);
-    const after = parsed.pathname.slice(markerIndex + marker.length);
-    if (
-      after.startsWith(`${CLOUDINARY_DELIVERY_TRANSFORMS}/`) ||
-      (after.includes("f_auto") &&
-        after.includes("q_auto") &&
-        after.includes("w_800"))
-    ) {
-      return source;
-    }
-
-    parsed.pathname = `${before}${CLOUDINARY_DELIVERY_TRANSFORMS}/${after.replace(/^\/+/, "")}`;
-    return parsed.toString();
-  } catch (_) {
-    return source;
-  }
-};
 
 const normalizeProductImagesForResponse = (product) => {
   if (!product) {
@@ -46,9 +13,9 @@ const normalizeProductImagesForResponse = (product) => {
 
   const base = typeof product.toObject === "function" ? product.toObject() : product;
   const normalizedImages = Array.isArray(base.images)
-    ? base.images.map((image) => optimizeCloudinaryImageUrl(image))
+    ? base.images.map((image) => imageStorage.optimizeDeliveryUrl(image))
     : [];
-  const normalizedImage = optimizeCloudinaryImageUrl(
+  const normalizedImage = imageStorage.optimizeDeliveryUrl(
     base.image || normalizedImages[0] || "",
   );
 
@@ -66,12 +33,12 @@ const saveImageFile = async (file) => {
     return null;
   }
 
-  const extension = (file.originalname.match(/\.[^.]+$/) || [".jpg"])[0];
-  const fileName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`;
+  const processedImage = await processUploadedImage(file);
+  const fileName = `${Date.now()}-${Math.round(Math.random() * 1e9)}-${processedImage.fileName}`;
   const { url } = await imageStorage.uploadFile(
-    file.buffer,
+    processedImage.buffer,
     fileName,
-    file.mimetype,
+    processedImage.mimeType,
   );
   return url;
 };
