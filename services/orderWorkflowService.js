@@ -22,10 +22,7 @@ const {
   getLeadTimeMinutes,
   normalizeDeliverySettings,
 } = require("../utils/deliverySettings");
-const {
-  haversineDistance,
-  isWithinDeliveryRadius,
-} = require("../utils/distance");
+const { fetchDrivingDistance } = require("../services/googleMapsDistanceService");
 const { SITE_KEY, DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const {
   razorpayClient,
@@ -1151,20 +1148,22 @@ const validateAndPriceOrder = async ({
     );
   }
 
-  if (
-    !isWithinDeliveryRadius(storeLocation, deliveryLat, deliveryLng, maxRadius)
-  ) {
+  const { distanceKm: deliveryDistanceKm } = await fetchDrivingDistance({
+    origin: {
+      lat: Number(storeLocation?.lat),
+      lng: Number(storeLocation?.lng),
+    },
+    destination: {
+      lat: deliveryLat,
+      lng: deliveryLng,
+    },
+  });
+
+  if (deliveryDistanceKm > maxRadius) {
     throw new Error(
       `Delivery address is outside our ${maxRadius}km delivery area.`,
     );
   }
-
-  const deliveryDistanceKm = haversineDistance(
-    Number(storeLocation?.lat),
-    Number(storeLocation?.lng),
-    deliveryLat,
-    deliveryLng,
-  );
 
   const activeCoupons = (siteContent?.coupons || []).filter(
     (coupon) => coupon.isActive !== false,
