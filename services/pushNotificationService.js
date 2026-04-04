@@ -365,8 +365,8 @@ const sendFcmToAdmins = async ({
           priority: "high",
           ttl: "30s",
           notification: {
-            channel_id: "order-alerts-v3",
-            sound: "default",
+            channel_id: "order-alerts-v4",
+            sound: "airtel_ringtone",
             sticky: true,
             visibility: "PUBLIC",
           },
