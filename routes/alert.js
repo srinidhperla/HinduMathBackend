@@ -7,6 +7,8 @@ const {
 const {
   getAlertOrders,
   getAlertDeliveryPartners,
+  subscribeAlertFcmToken,
+  unsubscribeAlertFcmToken,
   updateAlertDeliveryStatus,
 } = require("../controllers/alertController");
 const { updateOrderStatus } = require("../controllers/orderStatusController");
@@ -19,6 +21,18 @@ router.get(
   standardReadLimiter,
   alertKeyAuth,
   getAlertDeliveryPartners,
+);
+router.post(
+  "/fcm-tokens",
+  standardReadLimiter,
+  alertKeyAuth,
+  subscribeAlertFcmToken,
+);
+router.delete(
+  "/fcm-tokens",
+  standardReadLimiter,
+  alertKeyAuth,
+  unsubscribeAlertFcmToken,
 );
 router.put(
   "/orders/:id/status",

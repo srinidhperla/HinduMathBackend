@@ -1,6 +1,10 @@
 const Order = require("../models/Order");
 const User = require("../models/User");
 const { emitOrderEvent } = require("../services/orderEvents");
+const {
+  subscribeAlertDeviceFcm,
+  unsubscribeAlertDeviceFcm,
+} = require("../services/pushNotificationService");
 
 const syncOrderPaymentStatus = (order) => {
   const paymentMethod = String(order?.paymentMethod || "").toLowerCase();
@@ -67,6 +71,37 @@ exports.getAlertDeliveryPartners = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Error fetching delivery partners",
+      error: error.message,
+    });
+  }
+};
+
+exports.subscribeAlertFcmToken = async (req, res) => {
+  try {
+    const result = await subscribeAlertDeviceFcm(req.body.token, {
+      platform: req.body.platform,
+      userAgent: req.body.userAgent,
+      appVersion: req.body.appVersion,
+    });
+
+    return res.json(result);
+  } catch (error) {
+    const statusCode = /required|invalid/i.test(error.message) ? 400 : 500;
+    return res.status(statusCode).json({
+      message: "Error subscribing alert device token",
+      error: error.message,
+    });
+  }
+};
+
+exports.unsubscribeAlertFcmToken = async (req, res) => {
+  try {
+    const result = await unsubscribeAlertDeviceFcm(req.body.token);
+    return res.json(result);
+  } catch (error) {
+    const statusCode = /required|invalid/i.test(error.message) ? 400 : 500;
+    return res.status(statusCode).json({
+      message: "Error unsubscribing alert device token",
       error: error.message,
     });
   }

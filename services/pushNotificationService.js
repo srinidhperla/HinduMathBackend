@@ -1,5 +1,6 @@
 const webpush = require("web-push");
-const { JWT } = require("google-auth-library");
+const { GoogleAuth, JWT } = require("google-auth-library");
+const AdminAlertDevice = require("../models/AdminAlertDevice");
 const User = require("../models/User");
 const logger = require("../utils/logger");
 
@@ -31,7 +32,7 @@ const configureWebPush = () => {
   return config;
 };
 
-const getFcmConfig = () => {
+const getExplicitFcmConfig = () => {
   const projectId = process.env.FIREBASE_PROJECT_ID || "";
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL || "";
   const privateKey = (process.env.FIREBASE_PRIVATE_KEY || "").replace(
@@ -50,20 +51,55 @@ const getFcmConfig = () => {
   };
 };
 
-const getFcmAccessToken = async () => {
-  const fcmConfig = getFcmConfig();
-  if (!fcmConfig) {
-    return "";
+const FIREBASE_MESSAGING_SCOPE =
+  "https://www.googleapis.com/auth/firebase.messaging";
+
+const getFcmProjectId = async () => {
+  const configuredProjectId = String(
+    process.env.FIREBASE_PROJECT_ID ||
+      process.env.GOOGLE_CLOUD_PROJECT ||
+      process.env.GCLOUD_PROJECT ||
+      "",
+  ).trim();
+
+  if (configuredProjectId) {
+    return configuredProjectId;
   }
 
-  const jwtClient = new JWT({
-    email: fcmConfig.clientEmail,
-    key: fcmConfig.privateKey,
-    scopes: ["https://www.googleapis.com/auth/firebase.messaging"],
-  });
+  try {
+    const auth = new GoogleAuth({
+      scopes: [FIREBASE_MESSAGING_SCOPE],
+    });
+    return String((await auth.getProjectId()) || "").trim();
+  } catch {
+    return "";
+  }
+};
 
-  const { access_token: accessToken } = await jwtClient.authorize();
-  return accessToken || "";
+const getFcmAccessToken = async () => {
+  const explicitConfig = getExplicitFcmConfig();
+
+  if (explicitConfig) {
+    const jwtClient = new JWT({
+      email: explicitConfig.clientEmail,
+      key: explicitConfig.privateKey,
+      scopes: [FIREBASE_MESSAGING_SCOPE],
+    });
+
+    const { access_token: accessToken } = await jwtClient.authorize();
+    return accessToken || "";
+  }
+
+  try {
+    const auth = new GoogleAuth({
+      scopes: [FIREBASE_MESSAGING_SCOPE],
+    });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    return String(tokenResponse?.token || tokenResponse || "").trim();
+  } catch {
+    return "";
+  }
 };
 
 const normalizeSubscription = (subscription = {}) => ({
@@ -84,7 +120,8 @@ const isValidSubscription = (subscription = {}) =>
 
 const getPushStatus = async () => {
   const webPushConfig = getPushConfig();
-  const fcmConfig = getFcmConfig();
+  const explicitFcmConfig = getExplicitFcmConfig();
+  const fcmProjectId = await getFcmProjectId();
   const subscribedAdminCount = await User.countDocuments({
     role: "admin",
     $or: [
@@ -96,18 +133,21 @@ const getPushStatus = async () => {
     role: "admin",
     "fcmTokens.0": { $exists: true },
   });
+  const alertDeviceCount = await AdminAlertDevice.countDocuments({});
 
   return {
-    configured: Boolean(webPushConfig || fcmConfig),
+    configured: Boolean(webPushConfig || fcmProjectId),
     supported: true,
-    mode: fcmConfig ? "fcm" : webPushConfig ? "web-push" : "none",
+    mode: fcmProjectId ? "fcm" : webPushConfig ? "web-push" : "none",
     webPushConfigured: Boolean(webPushConfig),
     publicKey: webPushConfig?.publicKey || "",
     subject: webPushConfig?.subject || "",
-    fcmConfigured: Boolean(fcmConfig),
-    fcmProjectId: fcmConfig?.projectId || "",
+    fcmConfigured: Boolean(fcmProjectId),
+    fcmUsesExplicitServiceAccount: Boolean(explicitFcmConfig),
+    fcmProjectId,
     subscribedAdminCount,
     fcmSubscribedAdminCount,
+    alertDeviceCount,
   };
 };
 
@@ -207,6 +247,46 @@ const unsubscribeAdminFcm = async (userId, token) => {
   return { unsubscribed: true };
 };
 
+const subscribeAlertDeviceFcm = async (
+  token,
+  { platform = "android", userAgent = "", appVersion = "" } = {},
+) => {
+  const sanitizedToken = String(token || "").trim();
+  if (!sanitizedToken) {
+    throw new Error("FCM token is required");
+  }
+
+  await AdminAlertDevice.findOneAndUpdate(
+    { token: sanitizedToken },
+    {
+      $set: {
+        platform: String(platform || "android").trim() || "android",
+        source: "mobile-alert-app",
+        userAgent: String(userAgent || "").slice(0, 250),
+        appVersion: String(appVersion || "").slice(0, 50),
+        lastSeenAt: new Date(),
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    },
+  );
+
+  return { subscribed: true };
+};
+
+const unsubscribeAlertDeviceFcm = async (token) => {
+  const sanitizedToken = String(token || "").trim();
+  if (!sanitizedToken) {
+    throw new Error("FCM token is required");
+  }
+
+  await AdminAlertDevice.deleteOne({ token: sanitizedToken });
+  return { unsubscribed: true };
+};
+
 const removeStaleSubscription = async (endpoint) => {
   if (!endpoint) {
     return;
@@ -224,6 +304,7 @@ const removeStaleFcmToken = async (token) => {
   }
 
   await User.updateMany({ role: "admin" }, { $pull: { fcmTokens: { token } } });
+  await AdminAlertDevice.deleteOne({ token });
 };
 
 const sendFcmToAdmins = async ({
@@ -236,8 +317,8 @@ const sendFcmToAdmins = async ({
   badge,
   vibrate,
 }) => {
-  const fcmConfig = getFcmConfig();
-  if (!fcmConfig) {
+  const fcmProjectId = await getFcmProjectId();
+  if (!fcmProjectId) {
     return { sent: false, sentCount: 0, reason: "fcm-not-configured" };
   }
 
@@ -245,8 +326,11 @@ const sendFcmToAdmins = async ({
     role: "admin",
     "fcmTokens.0": { $exists: true },
   }).select("fcmTokens");
+  const alertDevices = await AdminAlertDevice.find({})
+    .select("token")
+    .lean();
 
-  if (adminUsers.length === 0) {
+  if (adminUsers.length === 0 && alertDevices.length === 0) {
     return { sent: false, sentCount: 0, reason: "no-fcm-subscribers" };
   }
 
@@ -255,13 +339,18 @@ const sendFcmToAdmins = async ({
     return { sent: false, sentCount: 0, reason: "fcm-token-unavailable" };
   }
 
-  const endpoint = `https://fcm.googleapis.com/v1/projects/${fcmConfig.projectId}/messages:send`;
+  const endpoint = `https://fcm.googleapis.com/v1/projects/${fcmProjectId}/messages:send`;
   const tokenSet = new Set();
   for (const adminUser of adminUsers) {
     for (const entry of adminUser.fcmTokens || []) {
       if (entry?.token) {
         tokenSet.add(entry.token);
       }
+    }
+  }
+  for (const device of alertDevices) {
+    if (device?.token) {
+      tokenSet.add(device.token);
     }
   }
 
@@ -274,8 +363,12 @@ const sendFcmToAdmins = async ({
         // Keep Android push as high priority so screen-off delivery is less likely to be delayed.
         android: {
           priority: "high",
+          ttl: "30s",
           notification: {
+            channel_id: "order-alerts-v3",
             sound: "default",
+            sticky: true,
+            visibility: "PUBLIC",
           },
         },
         notification: {
@@ -462,6 +555,8 @@ module.exports = {
   unsubscribeAdminPush,
   subscribeAdminFcm,
   unsubscribeAdminFcm,
+  subscribeAlertDeviceFcm,
+  unsubscribeAlertDeviceFcm,
   sendNewOrderPush,
   sendPendingReminderPush,
   sendPendingEscalationPush,
