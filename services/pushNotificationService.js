@@ -53,6 +53,10 @@ const getExplicitFcmConfig = () => {
 
 const FIREBASE_MESSAGING_SCOPE =
   "https://www.googleapis.com/auth/firebase.messaging";
+const FCM_ORDER_ALERT_CHANNEL_ID = "order-alerts-v5";
+const FCM_ORDER_ACTION_CATEGORY_ID = "admin-order-actions";
+const FCM_ORDER_ALERT_SOUND = "default";
+const FCM_ORDER_VIBRATION_PATTERN = [0, 250, 200, 250, 200, 350];
 
 const getFcmProjectId = async () => {
   const configuredProjectId = String(
@@ -307,6 +311,17 @@ const removeStaleFcmToken = async (token) => {
   await AdminAlertDevice.deleteOne({ token });
 };
 
+const serializeFcmData = (input = {}) =>
+  Object.entries(input).reduce((result, [key, value]) => {
+    if (value === undefined || value === null) {
+      return result;
+    }
+
+    result[key] =
+      typeof value === "string" ? value : JSON.stringify(value);
+    return result;
+  }, {});
+
 const sendFcmToAdmins = async ({
   title,
   body,
@@ -316,6 +331,7 @@ const sendFcmToAdmins = async ({
   icon,
   badge,
   vibrate,
+  data = {},
 }) => {
   const fcmProjectId = await getFcmProjectId();
   if (!fcmProjectId) {
@@ -357,18 +373,35 @@ const sendFcmToAdmins = async ({
   let sentCount = 0;
 
   for (const token of tokenSet) {
+    const messageData = serializeFcmData({
+      title,
+      message: body,
+      url: url || "/admin/orders",
+      priority: "high",
+      tag,
+      requireInteraction: String(Boolean(requireInteraction)),
+      sound: FCM_ORDER_ALERT_SOUND,
+      sticky: String(Boolean(requireInteraction)),
+      vibrate: JSON.stringify(vibrate || FCM_ORDER_VIBRATION_PATTERN),
+      categoryId: FCM_ORDER_ACTION_CATEGORY_ID,
+      ...data,
+    });
+
     const messagePayload = {
       message: {
         token,
-        // Keep Android push as high priority so screen-off delivery is less likely to be delayed.
+        data: messageData,
         android: {
           priority: "high",
           ttl: "30s",
           notification: {
-            channel_id: "order-alerts-v4",
-            sound: "airtel_ringtone",
+            channel_id: FCM_ORDER_ALERT_CHANNEL_ID,
+            sound: FCM_ORDER_ALERT_SOUND,
+            default_sound: true,
             sticky: true,
             visibility: "PUBLIC",
+            notification_priority: "PRIORITY_MAX",
+            proxy: "DENY",
           },
         },
         notification: {
@@ -398,6 +431,7 @@ const sendFcmToAdmins = async ({
             priority: "high",
             tag,
             requireInteraction: String(Boolean(requireInteraction)),
+            orderId: String(data.orderId || ""),
           },
         },
       },
@@ -450,11 +484,12 @@ const sendPushToAdmins = async ({
   icon = "/favicon.ico",
   badge = "/favicon.ico",
   vibrate = [200, 120, 220, 120, 260],
+  data = {},
 }) => {
   const config = configureWebPush();
-  const fcmConfig = getFcmConfig();
+  const fcmProjectId = await getFcmProjectId();
 
-  if (!config && !fcmConfig) {
+  if (!config && !fcmProjectId) {
     return { skipped: true, reason: "push-not-configured" };
   }
 
@@ -505,6 +540,7 @@ const sendPushToAdmins = async ({
     icon,
     badge,
     vibrate,
+    data,
   });
 
   const sentCount = webPushSentCount + Number(fcmResult.sentCount || 0);
@@ -519,33 +555,56 @@ const sendPushToAdmins = async ({
 
 const sendNewOrderPush = async (order) => {
   const customerName = order.user?.name || "A customer";
+  const orderId = String(order?._id || "");
+  const orderCode = String(order?.orderCode || orderId).toUpperCase();
 
   return sendPushToAdmins({
     title: "New bakery order",
     body: `${customerName} placed a new order. Open admin orders to accept it.`,
     url: "/admin/orders",
-    tag: `order-${order._id}`,
+    tag: `order-${orderId}`,
     requireInteraction: true,
+    data: {
+      orderId,
+      orderCode,
+      pendingCount: "1",
+    },
   });
 };
 
 const sendPendingReminderPush = async (order) => {
+  const orderId = String(order?._id || "");
+  const orderCode = String(order?.orderCode || orderId).toUpperCase();
+
   return sendPushToAdmins({
     title: "PENDING ORDER WAITING - Tap to open",
     body: "PENDING ORDER WAITING - Tap to open",
     url: "/admin/orders",
-    tag: `pending-${order._id}`,
+    tag: `pending-${orderId}`,
     requireInteraction: true,
+    data: {
+      orderId,
+      orderCode,
+      pendingCount: "1",
+    },
   });
 };
 
 const sendPendingEscalationPush = async (order) => {
+  const orderId = String(order?._id || "");
+  const orderCode = String(order?.orderCode || orderId).toUpperCase();
+
   return sendPushToAdmins({
     title: "Order still pending - please check immediately",
     body: "Order still pending - please check immediately",
     url: "/admin/orders",
-    tag: `pending-escalation-${order._id}`,
+    tag: `pending-escalation-${orderId}`,
     requireInteraction: true,
+    data: {
+      orderId,
+      orderCode,
+      pendingCount: "1",
+    },
   });
 };
 
