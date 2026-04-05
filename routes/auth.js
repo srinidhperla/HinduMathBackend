@@ -6,12 +6,16 @@ const {
   validateRegister,
   validateLogin,
   validateGoogleLogin,
+  validateForgotPassword,
+  validateResetPassword,
   validateProfileUpdate,
 } = require("../validators/authValidator");
 const {
   register,
   login,
   googleLogin,
+  forgotPassword,
+  resetPassword,
   getProfile,
   updateProfile,
 } = require("../controllers/authController");
@@ -19,6 +23,18 @@ const {
 // Public routes
 router.post("/register", strictAuthLimiter, validateRegister, register);
 router.post("/login", strictAuthLimiter, validateLogin, login);
+router.post(
+  "/forgot-password",
+  strictAuthLimiter,
+  validateForgotPassword,
+  forgotPassword,
+);
+router.post(
+  "/reset-password",
+  strictAuthLimiter,
+  validateResetPassword,
+  resetPassword,
+);
 router.post(
   "/google-login",
   strictAuthLimiter,

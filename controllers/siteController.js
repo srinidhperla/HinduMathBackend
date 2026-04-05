@@ -4,6 +4,7 @@ const {
   getReminderStatus,
   sendTestReminderEmail,
 } = require("../services/orderReminderService");
+const { resolveAdminEmailRecipients } = require("../services/adminEmailService");
 const {
   getPushStatus,
   subscribeAdminPush,
@@ -11,13 +12,21 @@ const {
   subscribeAdminFcm,
   unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
-const { sendEmail, getSmtpErrorDetails } = require("../services/emailService");
+const { sendEmail, getEmailErrorDetails } = require("../services/emailService");
 const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
 const { SITE_KEY } = require("../config/constants");
 const imageStorage = require("../services/cloudinaryStorage");
 const { processUploadedImage } = require("../services/imageProcessing");
 const logger = require("../utils/logger");
+
+const escapeHtml = (value) =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 const getOrCreateSiteContent = async () => {
   let content = await SiteContent.findOne({ singletonKey: SITE_KEY });
@@ -392,31 +401,31 @@ exports.sendTestAlertEmail = async (req, res) => {
     }
 
     res.json({
-      message: `Test alert email sent to ${result.recipient}`,
+      message: `Test alert email sent to ${result.recipients?.join(", ") || result.recipient}`,
       ...result,
       emailStatus,
     });
   } catch (error) {
-    const smtpError = getSmtpErrorDetails(error);
+    const emailError = getEmailErrorDetails(error);
     const emailStatus = await getReminderStatus().catch(() => null);
     logger.error("Test alert email failed", {
       error: error?.message || String(error),
-      code: smtpError.code,
-      responseCode: smtpError.responseCode,
-      hint: smtpError.hint,
+      code: emailError.code,
+      responseCode: emailError.responseCode,
+      hint: emailError.hint,
       emailStatus,
     });
     const statusCode =
-      smtpError.code === "EAUTH" ||
-      smtpError.code === "ESOCKET" ||
-      smtpError.code === "ETIMEDOUT"
+      emailError.code === "EAUTH" ||
+      emailError.code === "ESOCKET" ||
+      emailError.code === "ETIMEDOUT"
         ? 503
         : 500;
     res.status(statusCode).json({
-      message: smtpError.hint,
+      message: emailError.hint,
       error: error.message,
-      code: smtpError.code,
-      responseCode: smtpError.responseCode,
+      code: emailError.code,
+      responseCode: emailError.responseCode,
       emailStatus,
     });
   }
@@ -444,22 +453,30 @@ exports.sendContactMessage = async (req, res) => {
         .json({ message: "Valid phone number is required." });
     }
 
-    const adminEmail =
-      process.env.ADMIN_CONTACT_EMAIL ||
-      process.env.ADMIN_ALERT_EMAIL ||
-      "srinidhperla2004@gmail.com";
+    const adminRecipients = await resolveAdminEmailRecipients({
+      purpose: "contact",
+      includeAdminUsers: true,
+      includeSiteEmail: true,
+      respectAlertPreferences: false,
+    });
+
+    if (!adminRecipients.recipients.length) {
+      return res.status(503).json({
+        message: "Contact email recipients are not configured yet.",
+      });
+    }
 
     const result = await sendEmail({
-      to: adminEmail,
+      to: adminRecipients.recipients,
       subject: `Contact Form: ${subject}`,
       html: `
         <h2>New Contact Message</h2>
-        <p><strong>Name:</strong> ${name}</p>
-        <p><strong>Email:</strong> ${trimmedEmail}</p>
-        <p><strong>Phone:</strong> ${trimmedPhone || "Not provided"}</p>
-        <p><strong>Subject:</strong> ${subject}</p>
+        <p><strong>Name:</strong> ${escapeHtml(name)}</p>
+        <p><strong>Email:</strong> ${escapeHtml(trimmedEmail)}</p>
+        <p><strong>Phone:</strong> ${escapeHtml(trimmedPhone || "Not provided")}</p>
+        <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
         <hr />
-        <p>${message.replace(/\n/g, "<br />")}</p>
+        <p>${escapeHtml(message).replace(/\n/g, "<br />")}</p>
       `,
       replyTo: trimmedEmail,
     });
@@ -472,14 +489,13 @@ exports.sendContactMessage = async (req, res) => {
 
     res.json({ message: "Message sent successfully." });
   } catch (error) {
-    const emailError = getSmtpErrorDetails(error);
+    const emailError = getEmailErrorDetails(error);
     logger.error("Contact form email failed", {
       error: error?.message || String(error),
       code: emailError.code,
       responseCode: emailError.responseCode,
       hint: emailError.hint,
-      to:
-        process.env.ADMIN_CONTACT_EMAIL || process.env.ADMIN_ALERT_EMAIL || "",
+      to: "configured-admin-recipients",
       fromReplyTo: req.body?.email || "",
       subject: req.body?.subject || "",
     });

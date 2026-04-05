@@ -1,8 +1,56 @@
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
+const { sendEmail, isEmailConfigured } = require("../services/emailService");
+const logger = require("../utils/logger");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+const normalizeEmail = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const buildAuthResponseUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  phone: user.phone,
+  address: user.address,
+  savedAddresses: user.savedAddresses,
+});
+
+const getFrontendBaseUrl = () => {
+  const explicitUrl = String(process.env.FRONTEND_URL || "").trim();
+  if (explicitUrl) {
+    return explicitUrl.replace(/\/+$/, "");
+  }
+
+  const firstCorsOrigin = String(process.env.CORS_ORIGIN || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .find(Boolean);
+
+  if (firstCorsOrigin) {
+    return firstCorsOrigin.replace(/\/+$/, "");
+  }
+
+  return "http://localhost:5173";
+};
+
+const createPasswordResetToken = () => {
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+  return {
+    rawToken,
+    tokenHash,
+    expiresAt: new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS),
+  };
+};
 
 // Generate JWT Token
 const generateToken = (userId) => {
@@ -17,9 +65,7 @@ const generateToken = (userId) => {
 exports.register = async (req, res) => {
   try {
     const { name, email, password, phone, address } = req.body;
-    const normalizedEmail = String(email || "")
-      .trim()
-      .toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
 
     // Check if user already exists
     const existingUser = await User.findOne({ email: normalizedEmail });
@@ -44,15 +90,7 @@ exports.register = async (req, res) => {
     res.status(201).json({
       message: "User registered successfully",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        phone: user.phone,
-        address: user.address,
-        savedAddresses: user.savedAddresses,
-      },
+      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     res
@@ -65,9 +103,7 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const normalizedEmail = String(email || "")
-      .trim()
-      .toLowerCase();
+    const normalizedEmail = normalizeEmail(email);
 
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
@@ -87,15 +123,7 @@ exports.login = async (req, res) => {
     res.json({
       message: "Login successful",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        phone: user.phone,
-        address: user.address,
-        savedAddresses: user.savedAddresses,
-      },
+      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     res.status(500).json({ message: "Error logging in", error: error.message });
@@ -119,9 +147,7 @@ exports.googleLogin = async (req, res) => {
     });
 
     const payload = ticket.getPayload();
-    const email = String(payload?.email || "")
-      .trim()
-      .toLowerCase();
+    const email = normalizeEmail(payload?.email);
     const name = String(payload?.name || "").trim();
 
     if (!email) {
@@ -145,15 +171,7 @@ exports.googleLogin = async (req, res) => {
     res.json({
       message: "Login successful",
       token: authToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        phone: user.phone,
-        address: user.address,
-        savedAddresses: user.savedAddresses,
-      },
+      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     res.status(401).json({
@@ -192,5 +210,134 @@ exports.updateProfile = async (req, res) => {
     res
       .status(500)
       .json({ message: "Error updating profile", error: error.message });
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  const successMessage =
+    "If an account with that email exists, a password reset link has been sent.";
+
+  try {
+    const normalizedEmail = normalizeEmail(req.body?.email);
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      logger.info("Password reset requested for unknown email", {
+        email: normalizedEmail,
+      });
+      return res.json({ message: successMessage });
+    }
+
+    if (!isEmailConfigured()) {
+      logger.warn("Password reset requested while email service is not configured", {
+        userId: String(user._id),
+        email: normalizedEmail,
+      });
+      return res.json({ message: successMessage });
+    }
+
+    const { rawToken, tokenHash, expiresAt } = createPasswordResetToken();
+    user.passwordResetTokenHash = tokenHash;
+    user.passwordResetExpiresAt = expiresAt;
+    user.passwordResetRequestedAt = new Date();
+    await user.save();
+
+    const resetLink = `${getFrontendBaseUrl()}/reset-password/${rawToken}`;
+
+    try {
+      const emailResult = await sendEmail({
+        to: user.email,
+        subject: "Reset your Hindumatha's Cake World password",
+        text: [
+          `Hi ${user.name || "Customer"},`,
+          "",
+          "We received a request to reset your password.",
+          `Reset link: ${resetLink}`,
+          "",
+          "This link will expire in 60 minutes.",
+          "If you did not request this, you can ignore this email.",
+        ].join("\n"),
+        html: `
+          <p>Hi ${user.name || "Customer"},</p>
+          <p>We received a request to reset your password.</p>
+          <p><a href="${resetLink}">Reset your password</a></p>
+          <p>This link will expire in 60 minutes.</p>
+          <p>If you did not request this, you can ignore this email.</p>
+        `,
+      });
+
+      if (emailResult?.skipped) {
+        user.passwordResetTokenHash = undefined;
+        user.passwordResetExpiresAt = undefined;
+        user.passwordResetRequestedAt = undefined;
+        await user.save();
+
+        logger.warn("Password reset email skipped", {
+          userId: String(user._id),
+          email: normalizedEmail,
+          reason: emailResult.reason,
+        });
+      }
+    } catch (error) {
+      user.passwordResetTokenHash = undefined;
+      user.passwordResetExpiresAt = undefined;
+      user.passwordResetRequestedAt = undefined;
+      await user.save();
+
+      logger.error("Password reset email failed", {
+        userId: String(user._id),
+        email: normalizedEmail,
+        error: error?.message || String(error),
+      });
+    }
+
+    return res.json({ message: successMessage });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error sending password reset email",
+      error: error.message,
+    });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const rawToken = String(req.body?.token || "").trim();
+    const password = String(req.body?.password || "");
+
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    const user = await User.findOne({
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "This password reset link is invalid or has expired.",
+      });
+    }
+
+    user.password = password;
+    user.passwordResetTokenHash = undefined;
+    user.passwordResetExpiresAt = undefined;
+    user.passwordResetRequestedAt = undefined;
+    await user.save();
+
+    const token = generateToken(user._id);
+
+    return res.json({
+      message: "Password reset successful",
+      token,
+      user: buildAuthResponseUser(user),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error resetting password",
+      error: error.message,
+    });
   }
 };

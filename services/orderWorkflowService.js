@@ -427,7 +427,18 @@ const sendCustomerEmailSafely = async ({
   }
 
   try {
-    return await sendEmail({ to, subject, text, html });
+    const result = await sendEmail({ to, subject, text, html });
+
+    if (result?.skipped) {
+      logger.warn("Customer order email skipped", {
+        ...context,
+        to,
+        subject,
+        reason: result.reason,
+      });
+    }
+
+    return result;
   } catch (error) {
     logger.error("Customer order email failed", {
       ...context,

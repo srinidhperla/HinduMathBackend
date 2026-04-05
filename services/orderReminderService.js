@@ -1,15 +1,14 @@
 const Order = require("../models/Order");
-const SiteContent = require("../models/SiteContent");
 const {
   getEmailConfigurationStatus,
   isEmailConfigured,
   sendEmail,
 } = require("./emailService");
+const { resolveAdminEmailRecipients } = require("./adminEmailService");
 const {
   sendPendingReminderPush,
   sendPendingEscalationPush,
 } = require("./pushNotificationService");
-const { SITE_KEY } = require("../config/constants");
 const logger = require("../utils/logger");
 const REMINDER_INTERVAL_MS = 5 * 60 * 1000;
 const CHECK_INTERVAL_MS = 60 * 1000;
@@ -21,29 +20,7 @@ const recurringPushIntervalsByOrderId = new Map();
 const getOrderEmailReference = (order) =>
   String(order?.orderCode || "").trim() || String(order?._id || "").trim();
 
-const resolveAdminReminderEmail = async () => {
-  if (process.env.ADMIN_ALERT_EMAIL) {
-    return {
-      recipient: process.env.ADMIN_ALERT_EMAIL,
-      recipientSource: "ADMIN_ALERT_EMAIL",
-    };
-  }
-
-  const siteContent = await SiteContent.findOne({
-    singletonKey: SITE_KEY,
-  }).lean();
-  const fallbackRecipient = siteContent?.businessInfo?.email || "";
-
-  return {
-    recipient: fallbackRecipient,
-    recipientSource: fallbackRecipient ? "siteContent.businessInfo.email" : "none",
-  };
-};
-
-const getAdminReminderEmail = async () => {
-  const { recipient } = await resolveAdminReminderEmail();
-  return recipient || null;
-};
+const getAdminReminderRecipients = async () => resolveAdminEmailRecipients();
 
 const buildReminderEmail = (order) => {
   const customerName = order.user?.name || "Customer";
@@ -216,13 +193,13 @@ const sendPendingReminderForOrder = async (orderId, { force = false } = {}) => {
     return { skipped: true, reason: "email-not-configured" };
   }
 
-  const recipient = await getAdminReminderEmail();
-  if (!recipient) {
+  const recipientStatus = await getAdminReminderRecipients();
+  if (!recipientStatus.recipients.length) {
     return { skipped: true, reason: "recipient-not-configured" };
   }
 
   const { subject, text } = buildReminderEmail(order);
-  await sendEmail({ to: recipient, subject, text });
+  await sendEmail({ to: recipientStatus.recipients, subject, text });
 
   order.lastReminderSentAt = new Date();
   order.reminderEmailCount = Number(order.reminderEmailCount || 0) + 1;
@@ -278,13 +255,16 @@ const startOrderReminderService = () => {
 };
 
 const getReminderStatus = async () => {
-  const { recipient, recipientSource } = await resolveAdminReminderEmail();
+  const recipientStatus = await getAdminReminderRecipients();
   const pendingOrderCount = await Order.countDocuments({ status: "pending" });
 
   return {
     ...getEmailConfigurationStatus(),
-    recipient: recipient || "",
-    recipientSource,
+    recipient: recipientStatus.recipients[0] || "",
+    recipientSource: recipientStatus.recipientSourceSummary || "none",
+    recipients: recipientStatus.recipients,
+    recipientCount: recipientStatus.recipientCount,
+    recipientDetails: recipientStatus.recipientDetails,
     reminderIntervalMinutes: REMINDER_INTERVAL_MS / (60 * 1000),
     pendingOrderCount,
   };
@@ -295,14 +275,14 @@ const sendTestReminderEmail = async () => {
     return { skipped: true, reason: "email-not-configured" };
   }
 
-  const recipient = await getAdminReminderEmail();
-  if (!recipient) {
+  const recipientStatus = await getAdminReminderRecipients();
+  if (!recipientStatus.recipients.length) {
     return { skipped: true, reason: "recipient-not-configured" };
   }
 
   const sentAt = new Date();
   await sendEmail({
-    to: recipient,
+    to: recipientStatus.recipients,
     subject: `Bakery admin test alert ${sentAt.toLocaleTimeString("en-IN")}`,
     text: [
       "This is a test admin reminder email from Hindumatha's Cake World.",
@@ -313,7 +293,12 @@ const sendTestReminderEmail = async () => {
     ].join("\n"),
   });
 
-  return { sent: true, recipient, sentAt: sentAt.toISOString() };
+  return {
+    sent: true,
+    recipient: recipientStatus.recipients[0] || "",
+    recipients: recipientStatus.recipients,
+    sentAt: sentAt.toISOString(),
+  };
 };
 
 module.exports = {

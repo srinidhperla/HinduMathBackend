@@ -55,6 +55,32 @@ const validateLogin = (req, res, next) => {
   return next();
 };
 
+const validateForgotPassword = (req, res, next) => {
+  const { email } = req.body || {};
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: "Valid email is required" });
+  }
+
+  return next();
+};
+
+const validateResetPassword = (req, res, next) => {
+  const { token, password } = req.body || {};
+
+  if (!isNonEmptyString(token)) {
+    return res.status(400).json({ message: "Reset token is required" });
+  }
+
+  if (!isNonEmptyString(password) || String(password).trim().length < 6) {
+    return res
+      .status(400)
+      .json({ message: "Password must be at least 6 characters" });
+  }
+
+  return next();
+};
+
 const validateProfileUpdate = (req, res, next) => {
   const { name, phone, address, savedAddresses } = req.body || {};
 
@@ -95,5 +121,7 @@ module.exports = {
   validateRegister,
   validateLogin,
   validateGoogleLogin,
+  validateForgotPassword,
+  validateResetPassword,
   validateProfileUpdate,
 };
