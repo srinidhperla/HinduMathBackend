@@ -119,11 +119,11 @@ io.use(async (socket, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId)
+    const user = await User.findById(decoded.id)
       .select("_id role name")
       .lean();
 
-    if (!user) {
+    if (!user || user.role !== decoded.role) {
       return next(new Error("Authentication required"));
     }
 

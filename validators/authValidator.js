@@ -82,7 +82,11 @@ const validateResetPassword = (req, res, next) => {
 };
 
 const validateProfileUpdate = (req, res, next) => {
-  const { name, phone, address, savedAddresses } = req.body || {};
+  const { name, phone, address, savedAddresses, role } = req.body || {};
+
+  if (role !== undefined) {
+    return res.status(400).json({ message: "Role cannot be updated" });
+  }
 
   if (name !== undefined && !isNonEmptyString(name)) {
     return res.status(400).json({ message: "Name cannot be empty" });

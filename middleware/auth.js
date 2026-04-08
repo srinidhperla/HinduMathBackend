@@ -11,13 +11,26 @@ const auth = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findOne({ _id: decoded.userId });
+    const user = await User.findOne({ _id: decoded.id }).select("-password");
 
     if (!user) {
       throw new Error();
     }
 
-    req.user = user;
+    if (decoded.role !== user.role) {
+      throw new Error();
+    }
+
+    req.user = {
+      _id: user._id,
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: decoded.role,
+      phone: user.phone,
+      address: user.address,
+      savedAddresses: user.savedAddresses,
+    };
     req.token = token;
     next();
   } catch (error) {

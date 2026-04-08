@@ -53,10 +53,10 @@ const createPasswordResetToken = () => {
 };
 
 // Generate JWT Token
-const generateToken = (userId) => {
-  const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "365d";
+const generateToken = (user) => {
+  const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "7d";
 
-  return jwt.sign({ userId }, process.env.JWT_SECRET, {
+  return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
     expiresIn: jwtExpiresIn,
   });
 };
@@ -85,12 +85,11 @@ exports.register = async (req, res) => {
     await user.save();
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user);
 
     res.status(201).json({
       message: "User registered successfully",
       token,
-      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     res
@@ -118,12 +117,11 @@ exports.login = async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user);
 
     res.json({
       message: "Login successful",
       token,
-      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     res.status(500).json({ message: "Error logging in", error: error.message });
@@ -166,18 +164,34 @@ exports.googleLogin = async (req, res) => {
       await user.save();
     }
 
-    const authToken = generateToken(user._id);
+    const authToken = generateToken(user);
 
     res.json({
       message: "Login successful",
       token: authToken,
-      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     res.status(401).json({
       message: "Google authentication failed",
       error: error.message,
     });
+  }
+};
+
+// Get authenticated user for app bootstrapping
+exports.getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("-password");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.json(buildAuthResponseUser(user));
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Error fetching current user", error: error.message });
   }
 };
 
@@ -198,6 +212,7 @@ exports.updateProfile = async (req, res) => {
   try {
     const updates = req.body;
     delete updates.password; // Prevent password update through this route
+    delete updates.role; // Never trust frontend role updates
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
@@ -327,12 +342,11 @@ exports.resetPassword = async (req, res) => {
     user.passwordResetRequestedAt = undefined;
     await user.save();
 
-    const token = generateToken(user._id);
+    const token = generateToken(user);
 
     return res.json({
       message: "Password reset successful",
       token,
-      user: buildAuthResponseUser(user),
     });
   } catch (error) {
     return res.status(500).json({
