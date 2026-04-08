@@ -286,6 +286,10 @@ orderSchema.pre("save", function (next) {
 });
 
 orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index(
+  { paymentGatewayPaymentId: 1 },
+  { unique: true, sparse: true },
+);
 
 const Order = mongoose.model("Order", orderSchema);
 

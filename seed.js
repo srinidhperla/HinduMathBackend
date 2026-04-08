@@ -1,4 +1,5 @@
-﻿const mongoose = require("mongoose");
+﻿const crypto = require("crypto");
+const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const dotenv = require("dotenv");
 
@@ -8,7 +9,18 @@ const User = require("./models/User");
 const Product = require("./models/Product");
 const { resolveGalleryImageUrl } = require("./config/galleryImages");
 
+const generateSecurePassword = () => {
+  return crypto.randomBytes(16).toString("base64").slice(0, 16);
+};
+
 const seedData = async () => {
+  // Prevent accidental production seeding
+  if (process.env.NODE_ENV === "production") {
+    console.error("ERROR: Seed script cannot run in production environment!");
+    console.error("This script will DELETE all existing data.");
+    process.exit(1);
+  }
+
   try {
     // Connect to MongoDB
     await mongoose.connect(
@@ -22,27 +34,29 @@ const seedData = async () => {
     await Product.deleteMany({});
     console.log("Cleared existing data");
 
-    // Create admin user
+    // Create admin user with secure password
+    const adminPassword = process.env.SEED_ADMIN_PASSWORD || generateSecurePassword();
     const adminUser = new User({
       name: "Admin",
       email: "admin@hindumathascakes.com",
-      password: "admin123",
+      password: adminPassword,
       role: "admin",
       phone: "94904594990",
     });
     await adminUser.save();
-    console.log("Admin user created: admin@hindumathascakes.com / admin123");
+    console.log("Admin user created: admin@hindumathascakes.com");
 
-    // Create test user
+    // Create test user with secure password
+    const testPassword = process.env.SEED_TEST_PASSWORD || generateSecurePassword();
     const testUser = new User({
       name: "Test User",
       email: "test@example.com",
-      password: "test123",
+      password: testPassword,
       role: "user",
       phone: "9490459499",
     });
     await testUser.save();
-    console.log("Test user created: test@example.com / test123");
+    console.log("Test user created: test@example.com");
 
     // Create products
     const products = [
@@ -196,10 +210,13 @@ const seedData = async () => {
     await Product.insertMany(products);
     console.log(`${products.length} products created`);
 
-    console.log("\nâœ… Database seeded successfully!");
-    console.log("\nYou can now login with:");
-    console.log("Admin: admin@hindumathascakes.com / admin123");
-    console.log("User: test@example.com / test123");
+    console.log("\n✅ Database seeded successfully!");
+    console.log("\n⚠️  IMPORTANT: Save these credentials securely!");
+    console.log("Admin: admin@hindumathascakes.com");
+    console.log(`  Password: ${adminPassword}`);
+    console.log("User: test@example.com");
+    console.log(`  Password: ${testPassword}`);
+    console.log("\nTip: Set SEED_ADMIN_PASSWORD and SEED_TEST_PASSWORD env vars to use custom passwords.");
 
     process.exit(0);
   } catch (error) {

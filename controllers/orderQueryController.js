@@ -38,10 +38,13 @@ const getOrder = async (req, res) => {
       req.user.role !== "admin" &&
       !(
         req.user.role === "delivery" &&
-        order.assignedDeliveryPartner?._id?.toString() === req.user._id.toString()
+        order.assignedDeliveryPartner?._id?.toString() ===
+          req.user._id.toString()
       )
     ) {
-      return res.status(403).json({ message: "Not authorized to view this order" });
+      return res
+        .status(403)
+        .json({ message: "Not authorized to view this order" });
     }
 
     return res.json(order);
@@ -52,15 +55,41 @@ const getOrder = async (req, res) => {
   }
 };
 
+const VALID_ORDER_STATUSES = [
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready",
+  "delivered",
+  "cancelled",
+];
+
+const isValidDateString = (dateStr) => {
+  if (!dateStr || typeof dateStr !== "string") return false;
+  const date = new Date(dateStr);
+  return !isNaN(date.getTime());
+};
+
 const getAllOrders = async (req, res) => {
   try {
     const { status, startDate, endDate } = req.query;
     const query = {};
 
     if (status) {
+      if (!VALID_ORDER_STATUSES.includes(status)) {
+        return res.status(400).json({
+          message: `Invalid status. Must be one of: ${VALID_ORDER_STATUSES.join(", ")}`,
+        });
+      }
       query.status = status;
     }
     if (startDate || endDate) {
+      if (startDate && !isValidDateString(startDate)) {
+        return res.status(400).json({ message: "Invalid startDate format" });
+      }
+      if (endDate && !isValidDateString(endDate)) {
+        return res.status(400).json({ message: "Invalid endDate format" });
+      }
       query.createdAt = {};
       if (startDate) query.createdAt.$gte = new Date(startDate);
       if (endDate) query.createdAt.$lte = new Date(endDate);
@@ -86,12 +115,20 @@ const getOrderAnalytics = async (req, res) => {
     const query = {};
 
     if (startDate || endDate) {
+      if (startDate && !isValidDateString(startDate)) {
+        return res.status(400).json({ message: "Invalid startDate format" });
+      }
+      if (endDate && !isValidDateString(endDate)) {
+        return res.status(400).json({ message: "Invalid endDate format" });
+      }
       query.createdAt = {};
       if (startDate) query.createdAt.$gte = new Date(startDate);
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
-    const orders = await Order.find(query).populate("items.product", "name category").lean();
+    const orders = await Order.find(query)
+      .populate("items.product", "name category")
+      .lean();
     const [productCount, customerCount] = await Promise.all([
       Product.countDocuments({}),
       User.countDocuments({ role: "user" }),
@@ -101,7 +138,9 @@ const getOrderAnalytics = async (req, res) => {
     const dailyRevenueMap = new Map(last30Days.map((entry) => [entry.key, 0]));
     const ordersPerDayMap = new Map(last30Days.map((entry) => [entry.key, 0]));
     const todayKey = toLocalDateKey(new Date());
-    const nonCancelledOrders = orders.filter((order) => order.status !== "cancelled");
+    const nonCancelledOrders = orders.filter(
+      (order) => order.status !== "cancelled",
+    );
     const totalRevenue = nonCancelledOrders.reduce(
       (sum, order) => sum + Number(order.totalAmount || 0),
       0,
@@ -124,12 +163,16 @@ const getOrderAnalytics = async (req, res) => {
       statusBreakdown[order.status] = (statusBreakdown[order.status] || 0) + 1;
       if (order.status === "pending") pendingOrders += 1;
       if (ordersPerDayMap.has(createdKey)) {
-        ordersPerDayMap.set(createdKey, Number(ordersPerDayMap.get(createdKey) || 0) + 1);
+        ordersPerDayMap.set(
+          createdKey,
+          Number(ordersPerDayMap.get(createdKey) || 0) + 1,
+        );
       }
       if (isNotCancelled && dailyRevenueMap.has(createdKey)) {
         dailyRevenueMap.set(
           createdKey,
-          Number(dailyRevenueMap.get(createdKey) || 0) + Number(order.totalAmount || 0),
+          Number(dailyRevenueMap.get(createdKey) || 0) +
+            Number(order.totalAmount || 0),
         );
       }
       if (createdKey === todayKey) {
@@ -145,7 +188,8 @@ const getOrderAnalytics = async (req, res) => {
         productSales[productName] = {
           name: productName,
           quantity:
-            Number(productSales[productName]?.quantity || 0) + Number(item.quantity || 0),
+            Number(productSales[productName]?.quantity || 0) +
+            Number(item.quantity || 0),
           revenue: Number(productSales[productName]?.revenue || 0) + amount,
         };
       });
@@ -185,6 +229,9 @@ const getOrderAnalytics = async (req, res) => {
   }
 };
 
+const SSE_HEARTBEAT_INTERVAL_MS = 25000;
+const SSE_CONNECTION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes max connection time
+
 const streamOrders = async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -196,17 +243,43 @@ const streamOrders = async (req, res) => {
     res.write(`event: ${event.eventName}\ndata: ${JSON.stringify(event)}\n\n`);
   });
 
-  const heartbeat = setInterval(() => {
-    res.write(
-      `event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`,
-    );
-  }, 25000);
+  let isConnectionClosed = false;
 
-  req.on("close", () => {
+  const cleanup = () => {
+    if (isConnectionClosed) return;
+    isConnectionClosed = true;
     clearInterval(heartbeat);
+    clearTimeout(connectionTimeout);
     unsubscribe();
     res.end();
-  });
+  };
+
+  const heartbeat = setInterval(() => {
+    if (isConnectionClosed) {
+      clearInterval(heartbeat);
+      return;
+    }
+    try {
+      res.write(
+        `event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`,
+      );
+    } catch {
+      logger.warn("SSE heartbeat write failed, cleaning up connection");
+      cleanup();
+    }
+  }, SSE_HEARTBEAT_INTERVAL_MS);
+
+  const connectionTimeout = setTimeout(() => {
+    if (!isConnectionClosed) {
+      res.write(
+        `event: timeout\ndata: ${JSON.stringify({ message: "Connection timeout, please reconnect" })}\n\n`,
+      );
+      cleanup();
+    }
+  }, SSE_CONNECTION_TIMEOUT_MS);
+
+  req.on("close", cleanup);
+  req.on("error", cleanup);
 };
 
 module.exports = {
@@ -216,4 +289,3 @@ module.exports = {
   getOrderAnalytics,
   streamOrders,
 };
-

@@ -22,7 +22,9 @@ const {
   getLeadTimeMinutes,
   normalizeDeliverySettings,
 } = require("../utils/deliverySettings");
-const { fetchDrivingDistance } = require("../services/googleMapsDistanceService");
+const {
+  fetchDrivingDistance,
+} = require("../services/googleMapsDistanceService");
 const { SITE_KEY, DEFAULT_WEIGHT_MULTIPLIERS } = require("../config/constants");
 const {
   razorpayClient,
@@ -59,15 +61,29 @@ const ORDER_STATUS_EMAIL_LABELS = {
   cancelled: "Cancelled",
 };
 
-const generateNextOrderCode = async () => {
-  const counter = await Counter.findByIdAndUpdate(
-    ORDER_SEQUENCE_KEY,
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true, setDefaultsOnInsert: true },
-  );
+const generateNextOrderCode = async (retries = 3) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const counter = await Counter.findByIdAndUpdate(
+        ORDER_SEQUENCE_KEY,
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      );
 
-  const sequence = Number(counter?.seq || 0);
-  return `HM${String(sequence).padStart(6, "0")}`;
+      const sequence = Number(counter?.seq || 0);
+      return `HM${String(sequence).padStart(6, "0")}`;
+    } catch (error) {
+      // Handle duplicate key error from upsert race condition
+      if (error.code === 11000 && attempt < retries) {
+        // Exponential backoff: 10ms, 20ms, 40ms...
+        await new Promise((resolve) =>
+          setTimeout(resolve, 10 * Math.pow(2, attempt - 1)),
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
 };
 
 const isConfiguredStoreLocation = (storeLocation) => {
@@ -234,7 +250,9 @@ const formatEggTypeLabel = (eggType = "") => {
 };
 
 const keyToOptionLabel = (key = "") => {
-  const compact = String(key).replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const compact = String(key)
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
   const mappedLabels = {
     eggtype: "Cake Type",
     caketype: "Cake Type",
@@ -396,10 +414,15 @@ const getOrderItemDisplayName = (item) =>
 const buildOrderItemSummary = (order) =>
   (order?.items || [])
     .map((item) => {
-      const parts = [getOrderItemDisplayName(item), `Qty ${Number(item.quantity) || 0}`];
+      const parts = [
+        getOrderItemDisplayName(item),
+        `Qty ${Number(item.quantity) || 0}`,
+      ];
       const optionSummary =
         trimText(item?.optionSummary) ||
-        buildOrderItemOptionSummary(normalizeSelectedOptionEntries(item?.selectedOptions));
+        buildOrderItemOptionSummary(
+          normalizeSelectedOptionEntries(item?.selectedOptions),
+        );
       if (optionSummary) {
         parts.push(optionSummary);
       } else {
@@ -541,8 +564,12 @@ const sendOrderRejectedEmail = async (order) => {
 };
 
 const sendOrderStatusProgressEmail = async (order, previousStatus = "") => {
-  const nextStatus = String(order?.status || "").trim().toLowerCase();
-  const previous = String(previousStatus || "").trim().toLowerCase();
+  const nextStatus = String(order?.status || "")
+    .trim()
+    .toLowerCase();
+  const previous = String(previousStatus || "")
+    .trim()
+    .toLowerCase();
 
   if (!nextStatus || nextStatus === previous) {
     return { skipped: true, reason: "status-unchanged" };
@@ -773,7 +800,10 @@ const resolveTypedRow = (source, typedKey) => {
 
   const typedKeyLower = String(typedKey).trim().toLowerCase();
   const matchedEntry = getObjectEntries(source).find(
-    ([key]) => String(key || "").trim().toLowerCase() === typedKeyLower,
+    ([key]) =>
+      String(key || "")
+        .trim()
+        .toLowerCase() === typedKeyLower,
   );
   return matchedEntry && typeof matchedEntry[1] === "object"
     ? matchedEntry[1]
@@ -796,7 +826,10 @@ const readRowValue = (row, label) => {
   }
 
   const matchedEntry = getObjectEntries(row).find(
-    ([key]) => String(key || "").trim().toLowerCase() === lowerLabel,
+    ([key]) =>
+      String(key || "")
+        .trim()
+        .toLowerCase() === lowerLabel,
   );
   return matchedEntry ? matchedEntry[1] : undefined;
 };
@@ -1037,7 +1070,9 @@ const validateAndPriceOrder = async ({
     // admins update product prices while the customer is still on the payment page.
 
     const normalizedSize = trimText(selectedWeight?.label || item.size || "");
-    const normalizedFlavor = trimText(selectedFlavor?.name || item.flavor || "");
+    const normalizedFlavor = trimText(
+      selectedFlavor?.name || item.flavor || "",
+    );
     const normalizedWeight = trimText(item.weight || normalizedSize);
     const normalizedMessage = trimText(
       item.customMessage || item.message || item.cakeMessage || "",
@@ -1992,4 +2027,3 @@ exports.sendOrderRejectedEmail = sendOrderRejectedEmail;
 exports.sendOrderStatusProgressEmail = sendOrderStatusProgressEmail;
 exports.ESTIMATED_DELIVERY_LABELS = ESTIMATED_DELIVERY_LABELS;
 exports.ORDER_STATUS_EMAIL_LABELS = ORDER_STATUS_EMAIL_LABELS;
-

@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 const { sendEmail, isEmailConfigured } = require("../services/emailService");
 const logger = require("../utils/logger");
+const { recordFailedLogin, clearFailedLogins } = require("../middleware/rateLimiters");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const PASSWORD_RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -107,14 +108,19 @@ exports.login = async (req, res) => {
     // Find user
     const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
+      recordFailedLogin(normalizedEmail);
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
     // Check password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
+      recordFailedLogin(normalizedEmail);
       return res.status(401).json({ message: "Invalid credentials" });
     }
+
+    // Clear failed login attempts on successful login
+    clearFailedLogins(normalizedEmail);
 
     // Generate token
     const token = generateToken(user);
@@ -158,8 +164,8 @@ exports.googleLogin = async (req, res) => {
       user = new User({
         name: name || "Google User",
         email,
-        // Placeholder password for Google-created accounts
-        password: jwt.sign({ email }, process.env.JWT_SECRET).slice(0, 16),
+        // Secure random password for Google-created accounts (not used for login)
+        password: crypto.randomBytes(32).toString("hex"),
       });
       await user.save();
     }
@@ -237,17 +243,19 @@ exports.forgotPassword = async (req, res) => {
     const user = await User.findOne({ email: normalizedEmail });
 
     if (!user) {
-      logger.info("Password reset requested for unknown email", {
-        email: normalizedEmail,
-      });
+      // Log without the actual email to prevent information disclosure via logs
+      logger.info("Password reset requested for unknown email");
       return res.json({ message: successMessage });
     }
 
     if (!isEmailConfigured()) {
-      logger.warn("Password reset requested while email service is not configured", {
-        userId: String(user._id),
-        email: normalizedEmail,
-      });
+      logger.warn(
+        "Password reset requested while email service is not configured",
+        {
+          userId: String(user._id),
+          email: normalizedEmail,
+        },
+      );
       return res.json({ message: successMessage });
     }
 

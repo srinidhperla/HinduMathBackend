@@ -1,7 +1,5 @@
 const Product = require("../models/Product");
-const {
-  emitAdminDataUpdated,
-} = require("../services/orderEvents");
+const { emitAdminDataUpdated } = require("../services/orderEvents");
 const {
   normalizeProductImagesForResponse,
   normalizeProductPayload,
@@ -16,8 +14,15 @@ const {
 
 const getAllProducts = async (req, res) => {
   try {
-    const { category, occasion, minPrice, maxPrice, search, sortBy, sortOrder = "asc" } =
-      req.query;
+    const {
+      category,
+      occasion,
+      minPrice,
+      maxPrice,
+      search,
+      sortBy,
+      sortOrder = "asc",
+    } = req.query;
     const query = {};
 
     if (category) query.category = category;
@@ -37,7 +42,9 @@ const getAllProducts = async (req, res) => {
         : { category: 1, displayOrder: 1, name: 1, createdAt: -1 };
 
     const products = await Product.find(query).sort(sort);
-    return res.json(products.map((product) => normalizeProductImagesForResponse(product)));
+    return res.json(
+      products.map((product) => normalizeProductImagesForResponse(product)),
+    );
   } catch (error) {
     return res
       .status(500)
@@ -66,7 +73,9 @@ const createProduct = async (req, res) => {
     const newImageIds = parseArrayField(req.body.newImageIds);
 
     if (!req.files?.length) {
-      return res.status(400).json({ message: "At least one product image is required" });
+      return res
+        .status(400)
+        .json({ message: "At least one product image is required" });
     }
 
     const savedNewImages = await saveImageFiles(req.files);
@@ -122,7 +131,9 @@ const updateProduct = async (req, res) => {
           ? [existingProduct.image]
           : [];
 
-    const keptExistingImages = payload.images.length ? payload.images : existingImages;
+    const keptExistingImages = payload.images.length
+      ? payload.images
+      : existingImages;
     let nextImages = keptExistingImages;
 
     if (req.files?.length) {
@@ -147,7 +158,12 @@ const updateProduct = async (req, res) => {
       });
     }
 
-    const removedImages = existingImages.filter((imagePath) => !nextImages.includes(imagePath));
+    // Only delete images that were actually part of this product's existing images
+    const removedImages = existingImages.filter(
+      (imagePath) =>
+        !nextImages.includes(imagePath) &&
+        existingProduct.images?.includes(imagePath),
+    );
     payload.images = nextImages;
     await deleteImageFiles(removedImages);
 
@@ -192,8 +208,14 @@ const deleteProduct = async (req, res) => {
         : [product.image].filter(Boolean),
     );
 
-    await invalidatePublicCache({ action: "deleteProduct", productId: req.params.id });
-    emitAdminDataUpdated("products", { action: "deleted", productId: req.params.id });
+    await invalidatePublicCache({
+      action: "deleteProduct",
+      productId: req.params.id,
+    });
+    emitAdminDataUpdated("products", {
+      action: "deleted",
+      productId: req.params.id,
+    });
     return res.json({ message: "Product deleted successfully" });
   } catch (error) {
     return res

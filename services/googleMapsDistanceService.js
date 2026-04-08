@@ -5,7 +5,11 @@ const GOOGLE_DISTANCE_MATRIX_URL =
 
 const toCoordinate = (value, min, max) => {
   const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue < min || numericValue > max) {
+  if (
+    !Number.isFinite(numericValue) ||
+    numericValue < min ||
+    numericValue > max
+  ) {
     return null;
   }
 
@@ -14,7 +18,9 @@ const toCoordinate = (value, min, max) => {
 
 const getGoogleMapsKey = () =>
   String(
-    process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || "",
+    process.env.GOOGLE_MAPS_API_KEY ||
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      "",
   ).trim();
 
 const getElementErrorMessage = (element = {}) =>
@@ -39,20 +45,33 @@ const parseDistanceMatrixPayload = (payload = {}) => {
   };
 };
 
-const fetchDrivingDistance = async ({ origin, destination }) => {
-  const originLat = toCoordinate(origin?.lat, -90, 90);
-  const originLng = toCoordinate(origin?.lng, -180, 180);
-  const destinationLat = toCoordinate(destination?.lat, -90, 90);
-  const destinationLng = toCoordinate(destination?.lng, -180, 180);
-
-  if (
-    originLat === null ||
-    originLng === null ||
-    destinationLat === null ||
-    destinationLng === null
-  ) {
-    throw new Error("Valid origin and destination coordinates are required.");
+const validateCoordinates = (coords, label) => {
+  if (!coords || typeof coords !== "object") {
+    return `${label} coordinates are missing.`;
   }
+  const lat = toCoordinate(coords.lat, -90, 90);
+  const lng = toCoordinate(coords.lng, -180, 180);
+  if (lat === null) {
+    return `${label} latitude is invalid (must be a number between -90 and 90).`;
+  }
+  if (lng === null) {
+    return `${label} longitude is invalid (must be a number between -180 and 180).`;
+  }
+  return null;
+};
+
+const fetchDrivingDistance = async ({ origin, destination }) => {
+  const originError = validateCoordinates(origin, "Origin");
+  const destinationError = validateCoordinates(destination, "Destination");
+
+  if (originError || destinationError) {
+    throw new Error(originError || destinationError);
+  }
+
+  const originLat = toCoordinate(origin.lat, -90, 90);
+  const originLng = toCoordinate(origin.lng, -180, 180);
+  const destinationLat = toCoordinate(destination.lat, -90, 90);
+  const destinationLng = toCoordinate(destination.lng, -180, 180);
 
   const apiKey = getGoogleMapsKey();
   if (!apiKey) {

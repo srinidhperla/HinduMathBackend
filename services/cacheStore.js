@@ -111,7 +111,11 @@ const resolveUpstashCredentials = (normalizedRedisUrl) => {
 
   try {
     const parsed = new URL(normalizedRedisUrl);
-    if (!String(parsed.hostname || "").toLowerCase().endsWith("upstash.io")) {
+    if (
+      !String(parsed.hostname || "")
+        .toLowerCase()
+        .endsWith("upstash.io")
+    ) {
       return null;
     }
 
@@ -153,6 +157,8 @@ const findRedisKeysByPrefix = async (prefix) => {
 
   const keys = [];
   let cursor = 0;
+  let iterations = 0;
+  const MAX_SCAN_ITERATIONS = 1000;
   do {
     const response = await redisClient.scan(cursor, {
       match: `${prefix}*`,
@@ -161,6 +167,11 @@ const findRedisKeysByPrefix = async (prefix) => {
     const normalized = normalizeScanResponse(response);
     cursor = normalized.cursor;
     keys.push(...normalized.keys);
+    iterations++;
+    if (iterations >= MAX_SCAN_ITERATIONS) {
+      logger.warn("Redis scan reached max iterations", { prefix, iterations });
+      break;
+    }
   } while (cursor !== 0);
 
   return keys;
@@ -246,7 +257,11 @@ const getCachedJson = async (key) => {
   return getMemoryEntry(cacheKey);
 };
 
-const setCachedJson = async (key, payload, ttlSeconds = DEFAULT_TTL_SECONDS) => {
+const setCachedJson = async (
+  key,
+  payload,
+  ttlSeconds = DEFAULT_TTL_SECONDS,
+) => {
   const cacheKey = buildCacheKey(key);
   const safeTtl = Number(ttlSeconds || DEFAULT_TTL_SECONDS);
 

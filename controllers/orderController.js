@@ -93,6 +93,7 @@ const verifyPaymentAndCreateOrder = async (req, res) => {
     const { razorpayOrderId, razorpayPaymentId, razorpaySignature, orderData } =
       req.body;
 
+    // Always verify signature first before any database operations
     const expectedSignature = crypto
       .createHmac("sha256", RAZORPAY_KEY_SECRET)
       .update(`${razorpayOrderId}|${razorpayPaymentId}`)
@@ -102,11 +103,21 @@ const verifyPaymentAndCreateOrder = async (req, res) => {
       return res.status(400).json({ message: "Payment signature is invalid" });
     }
 
+    // Check for existing order only after signature is verified
     const existingOrder = await Order.findOne({
       paymentGatewayPaymentId: razorpayPaymentId,
-    });
+    })
+      .populate("items.product")
+      .populate("user", "name email phone")
+      .populate("assignedDeliveryPartner", "name phone");
 
     if (existingOrder) {
+      // Verify the existing order belongs to the same user
+      if (existingOrder.user._id.toString() !== req.user._id.toString()) {
+        return res
+          .status(403)
+          .json({ message: "Unauthorized access to order" });
+      }
       return res.json(existingOrder);
     }
 

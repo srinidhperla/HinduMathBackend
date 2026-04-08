@@ -1,7 +1,5 @@
 const crypto = require("crypto");
 
-const DEFAULT_ALERT_PRIVATE_KEY = "srinidha78@78";
-
 const readIncomingPrivateKey = (req) => {
   const headerKey = String(req.header("x-alert-key") || "").trim();
   if (headerKey) {
@@ -28,10 +26,16 @@ const safeCompare = (receivedValue, expectedValue) => {
 };
 
 const alertKeyAuth = (req, res, next) => {
+  const expectedKey = String(process.env.ALERT_ORDERS_PRIVATE_KEY || "").trim();
+
+  if (!expectedKey) {
+    return res.status(503).json({
+      message:
+        "Alert API is not configured. Set ALERT_ORDERS_PRIVATE_KEY environment variable.",
+    });
+  }
+
   const receivedKey = readIncomingPrivateKey(req);
-  const expectedKey = String(
-    process.env.ALERT_ORDERS_PRIVATE_KEY || DEFAULT_ALERT_PRIVATE_KEY,
-  ).trim();
 
   if (!receivedKey || !safeCompare(receivedKey, expectedKey)) {
     return res.status(401).json({

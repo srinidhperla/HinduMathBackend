@@ -17,6 +17,22 @@ const PUSH_REPEAT_CAP_MS = 10 * 60 * 1000;
 
 let reminderIntervalHandle = null;
 const recurringPushIntervalsByOrderId = new Map();
+
+// Graceful shutdown: clear all intervals on process termination
+const clearAllReminderIntervals = () => {
+  if (reminderIntervalHandle) {
+    clearInterval(reminderIntervalHandle);
+    reminderIntervalHandle = null;
+  }
+  for (const [orderId, intervalHandle] of recurringPushIntervalsByOrderId) {
+    clearInterval(intervalHandle);
+  }
+  recurringPushIntervalsByOrderId.clear();
+};
+
+process.on("SIGTERM", clearAllReminderIntervals);
+process.on("SIGINT", clearAllReminderIntervals);
+
 const getOrderEmailReference = (order) =>
   String(order?.orderCode || "").trim() || String(order?._id || "").trim();
 

@@ -4,7 +4,9 @@ const {
   getReminderStatus,
   sendTestReminderEmail,
 } = require("../services/orderReminderService");
-const { resolveAdminEmailRecipients } = require("../services/adminEmailService");
+const {
+  resolveAdminEmailRecipients,
+} = require("../services/adminEmailService");
 const {
   getPushStatus,
   subscribeAdminPush,
@@ -20,13 +22,19 @@ const imageStorage = require("../services/cloudinaryStorage");
 const { processUploadedImage } = require("../services/imageProcessing");
 const logger = require("../utils/logger");
 
-const escapeHtml = (value) =>
-  String(value || "")
+const escapeHtml = (value) => {
+  const str = String(value || "");
+  // Remove zero-width and control characters that could be used for attacks
+  const sanitized = str.replace(/[\u200B-\u200D\uFEFF\u202A-\u202E]/g, "");
+  return sanitized
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+    .replace(/'/g, "&#39;")
+    .replace(/`/g, "&#96;")
+    .replace(/\//g, "&#47;");
+};
 
 const getOrCreateSiteContent = async () => {
   let content = await SiteContent.findOne({ singletonKey: SITE_KEY });
@@ -180,7 +188,9 @@ exports.addGalleryItem = async (req, res) => {
     emitAdminDataUpdated("settings", { action: "gallery-item-added" });
     res.status(201).json({
       ...content.galleryItems[0].toObject(),
-      imageUrl: imageStorage.optimizeDeliveryUrl(content.galleryItems[0].imageUrl),
+      imageUrl: imageStorage.optimizeDeliveryUrl(
+        content.galleryItems[0].imageUrl,
+      ),
     });
   } catch (error) {
     res

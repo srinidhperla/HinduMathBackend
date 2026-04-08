@@ -83,20 +83,30 @@ exports.searchPlaces = async (req, res) => {
   const apiKey = requireGoogleMapsKey(req, res);
   if (!apiKey) return;
 
-  const query = String(req.query.query || "").trim();
+  const query = String(req.query.query || "")
+    .trim()
+    .slice(0, 500);
   if (!query) {
     return res.status(400).json({ message: "query is required" });
   }
 
+  const location = String(req.query.location || "")
+    .trim()
+    .slice(0, 100);
+  const radius = Math.min(
+    Math.max(parseInt(req.query.radius, 10) || 30000, 1),
+    50000,
+  );
+
   const params = new URLSearchParams({
     input: query,
     key: apiKey,
-    components: `country:${String(req.query.country || "in")}`,
+    components: `country:${String(req.query.country || "in").slice(0, 5)}`,
   });
 
-  if (String(req.query.location || "").trim()) {
-    params.set("location", String(req.query.location).trim());
-    params.set("radius", String(req.query.radius || "30000"));
+  if (location) {
+    params.set("location", location);
+    params.set("radius", String(radius));
   }
 
   return forwardRequest(

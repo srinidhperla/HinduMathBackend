@@ -108,10 +108,8 @@ io.use(async (socket, next) => {
     const bearerToken = authHeader?.startsWith("Bearer ")
       ? authHeader.slice(7)
       : "";
-    const token =
-      socket.handshake.auth?.token ||
-      socket.handshake.query?.token ||
-      bearerToken;
+    // Only accept token from auth object or Authorization header - NOT query params
+    const token = socket.handshake.auth?.token || bearerToken;
 
     if (!token) {
       socket.data.user = null;
@@ -119,9 +117,7 @@ io.use(async (socket, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id)
-      .select("_id role name")
-      .lean();
+    const user = await User.findById(decoded.id).select("_id role name").lean();
 
     if (!user || user.role !== decoded.role) {
       return next(new Error("Authentication required"));
@@ -130,7 +126,16 @@ io.use(async (socket, next) => {
     socket.data.user = user;
     return next();
   } catch (error) {
-    return next(new Error("Authentication failed"));
+    // Distinguish between auth errors and system errors
+    if (
+      error.name === "JsonWebTokenError" ||
+      error.name === "TokenExpiredError"
+    ) {
+      return next(new Error("Authentication failed"));
+    }
+    // Log system errors but still reject connection with generic message
+    console.error("Socket auth system error:", error.message);
+    return next(new Error("Authentication temporarily unavailable"));
   }
 });
 

@@ -1,8 +1,6 @@
 const Order = require("../models/Order");
 const User = require("../models/User");
-const {
-  emitOrderEvent,
-} = require("../services/orderEvents");
+const { emitOrderEvent } = require("../services/orderEvents");
 const {
   schedulePendingOrderPushRetries,
   clearOrderReminderRetries,
@@ -52,26 +50,18 @@ const updateOrderStatus = async (req, res) => {
       rejectionMessage,
       assignedDeliveryPartner,
     } = req.body;
-    const order = await Order.findById(req.params.id);
 
-    if (!order) {
-      return res.status(404).json({ message: "Order not found" });
-    }
-
-    const previousStatus = order.status;
-
+    // Pre-validation before atomic update
     if (status === "confirmed") {
-      const resolvedEstimatedDeliveryTime =
-        estimatedDeliveryTime || order.estimatedDeliveryTime;
       const validEstimatedTimes = Object.keys(ESTIMATED_DELIVERY_LABELS);
-      if (!validEstimatedTimes.includes(String(resolvedEstimatedDeliveryTime || ""))) {
+      if (!validEstimatedTimes.includes(String(estimatedDeliveryTime || ""))) {
         return res.status(400).json({
           message: "Estimated delivery time is required for accepted orders",
         });
       }
       if (
-        resolvedEstimatedDeliveryTime === "custom" &&
-        !String(customDeliveryTime || order.customDeliveryTime || "").trim()
+        estimatedDeliveryTime === "custom" &&
+        !String(customDeliveryTime || "").trim()
       ) {
         return res.status(400).json({
           message: "Custom delivery time is required when Custom is selected",
@@ -98,69 +88,127 @@ const updateOrderStatus = async (req, res) => {
           message: "Selected delivery partner was not found",
         });
       }
-
-      order.assignedDeliveryPartner = deliveryPartner._id;
-      if (order.deliveryStatus !== "delivered") {
-        order.deliveryStatus = "pending";
-      }
     }
 
-    if (previousStatus !== status) {
-      order.statusTimeline = [
-        ...(Array.isArray(order.statusTimeline) ? order.statusTimeline : []),
-        { status, actorRole: "admin", updatedAt: new Date() },
-      ];
-    }
+    // Build atomic update operations
+    const updateOps = { $set: {}, $push: {} };
+    const now = new Date();
 
-    order.status = status;
+    updateOps.$set.status = status;
 
     if (status === "confirmed") {
-      order.estimatedDeliveryTime = estimatedDeliveryTime || order.estimatedDeliveryTime;
-      order.customDeliveryTime =
-        order.estimatedDeliveryTime === "custom"
-          ? String(customDeliveryTime || order.customDeliveryTime || "").trim()
+      updateOps.$set.estimatedDeliveryTime = estimatedDeliveryTime;
+      updateOps.$set.customDeliveryTime =
+        estimatedDeliveryTime === "custom"
+          ? String(customDeliveryTime || "").trim()
           : "";
-      order.acceptanceMessage =
-        acceptanceMessage !== undefined
-          ? String(acceptanceMessage || "").trim()
-          : order.acceptanceMessage || "";
-      order.rejectionReason = undefined;
-      order.rejectionMessage = "";
+      updateOps.$set.acceptanceMessage = String(acceptanceMessage || "").trim();
+      updateOps.$set.rejectionReason = undefined;
+      updateOps.$set.rejectionMessage = "";
     }
 
     if (status === "cancelled") {
-      order.estimatedDeliveryTime = undefined;
-      order.customDeliveryTime = "";
-      order.rejectionReason = rejectionReason;
-      order.rejectionMessage = String(rejectionMessage || "").trim();
-      order.acceptanceMessage = "";
-      order.deliveryStatus = "pending";
-      order.assignedDeliveryPartner = null;
+      updateOps.$set.estimatedDeliveryTime = undefined;
+      updateOps.$set.customDeliveryTime = "";
+      updateOps.$set.rejectionReason = rejectionReason;
+      updateOps.$set.rejectionMessage = String(rejectionMessage || "").trim();
+      updateOps.$set.acceptanceMessage = "";
+      updateOps.$set.deliveryStatus = "pending";
+      updateOps.$set.assignedDeliveryPartner = null;
     }
 
     if (status === "pending") {
-      order.pendingReminderEscalatedAt = null;
+      updateOps.$set.pendingReminderEscalatedAt = null;
     }
 
     if (status === "delivered") {
-      order.deliveryStatus = "delivered";
+      updateOps.$set.deliveryStatus = "delivered";
     } else if (status === "ready") {
-      order.deliveryStatus = "outForDelivery";
+      updateOps.$set.deliveryStatus = "outForDelivery";
     } else if (status !== "cancelled") {
-      order.deliveryStatus = "pending";
+      updateOps.$set.deliveryStatus = "pending";
     }
 
-    syncOrderPaymentStatus(order);
+    if (assignedDeliveryPartner) {
+      updateOps.$set.assignedDeliveryPartner = assignedDeliveryPartner;
+      if (status !== "delivered") {
+        updateOps.$set.deliveryStatus = "pending";
+      }
+    }
 
-    await order.save();
+    // Sync payment status
+    const paymentStatusByStatus = {
+      cancelled: "failed",
+      delivered: "completed",
+    };
+    if (paymentStatusByStatus[status]) {
+      updateOps.$set.paymentStatus = paymentStatusByStatus[status];
+    }
+
+    updateOps.$push.statusTimeline = {
+      status,
+      actorRole: "admin",
+      updatedAt: now,
+    };
+
+    // Capture previous status BEFORE the update for status transition detection
+    const orderBefore = await Order.findById(req.params.id).select("status").lean();
+    if (!orderBefore) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+    const previousStatus = orderBefore.status;
+
+    // Use findOneAndUpdate with conditions to prevent race conditions
+    const order = await Order.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        status: { $ne: status }, // Only update if status is changing
+      },
+      updateOps,
+      { new: true },
+    );
+
+    // If order not found with status change, try without the status check
+    // (in case only other fields are being updated)
+    let finalOrder = order;
+    if (!order) {
+      finalOrder = await Order.findById(req.params.id);
+      // Status already matches, update other fields if needed
+      if (assignedDeliveryPartner) {
+        finalOrder.assignedDeliveryPartner = assignedDeliveryPartner;
+        if (finalOrder.deliveryStatus !== "delivered") {
+          finalOrder.deliveryStatus = "pending";
+        }
+      }
+      if (
+        status === "confirmed" &&
+        (estimatedDeliveryTime || acceptanceMessage !== undefined)
+      ) {
+        finalOrder.estimatedDeliveryTime =
+          estimatedDeliveryTime || finalOrder.estimatedDeliveryTime;
+        finalOrder.customDeliveryTime =
+          finalOrder.estimatedDeliveryTime === "custom"
+            ? String(
+                customDeliveryTime || finalOrder.customDeliveryTime || "",
+              ).trim()
+            : "";
+        finalOrder.acceptanceMessage =
+          acceptanceMessage !== undefined
+            ? String(acceptanceMessage || "").trim()
+            : finalOrder.acceptanceMessage || "";
+      }
+      syncOrderPaymentStatus(finalOrder);
+      await finalOrder.save();
+    }
+
     if (status !== "pending") {
-      clearOrderReminderRetries(order._id);
+      clearOrderReminderRetries(finalOrder._id);
     } else {
-      schedulePendingOrderPushRetries(order._id);
+      schedulePendingOrderPushRetries(finalOrder._id);
     }
 
-    await populateOrderDetails(order);
-    emitOrderEvent("order-status-updated", order.toObject());
+    await populateOrderDetails(finalOrder);
+    emitOrderEvent("order-status-updated", finalOrder.toObject());
 
     if (
       status === "confirmed" &&
@@ -168,9 +216,9 @@ const updateOrderStatus = async (req, res) => {
         estimatedDeliveryTime !== undefined ||
         acceptanceMessage !== undefined)
     ) {
-      sendOrderAcceptedEmail(order).catch((error) => {
+      sendOrderAcceptedEmail(finalOrder).catch((error) => {
         logger.error("Order accepted email failed", {
-          orderId: order._id,
+          orderId: finalOrder._id,
           error: error.message,
         });
       });
@@ -182,24 +230,26 @@ const updateOrderStatus = async (req, res) => {
         rejectionReason !== undefined ||
         rejectionMessage !== undefined)
     ) {
-      sendOrderRejectedEmail(order).catch((error) => {
+      sendOrderRejectedEmail(finalOrder).catch((error) => {
         logger.error("Order rejected email failed", {
-          orderId: order._id,
+          orderId: finalOrder._id,
           error: error.message,
         });
       });
     }
 
     if (previousStatus !== status) {
-      sendOrderStatusProgressEmail(order, previousStatus).catch((error) => {
-        logger.error("Order status progress email failed", {
-          orderId: order._id,
-          error: error.message,
-        });
-      });
+      sendOrderStatusProgressEmail(finalOrder, previousStatus).catch(
+        (error) => {
+          logger.error("Order status progress email failed", {
+            orderId: finalOrder._id,
+            error: error.message,
+          });
+        },
+      );
     }
 
-    return res.json(order);
+    return res.json(finalOrder);
   } catch (error) {
     return res
       .status(500)
@@ -215,7 +265,9 @@ const cancelOrder = async (req, res) => {
     }
 
     if (order.user.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Not authorized to cancel this order" });
+      return res
+        .status(403)
+        .json({ message: "Not authorized to cancel this order" });
     }
     if (order.status !== "pending") {
       return res
@@ -248,7 +300,9 @@ const cancelOrder = async (req, res) => {
 const updateDeliveryStatus = async (req, res) => {
   try {
     const { deliveryStatus } = req.body;
-    if (!["outForDelivery", "delivered"].includes(String(deliveryStatus || ""))) {
+    if (
+      !["outForDelivery", "delivered"].includes(String(deliveryStatus || ""))
+    ) {
       return res.status(400).json({
         message: "deliveryStatus must be outForDelivery or delivered",
       });

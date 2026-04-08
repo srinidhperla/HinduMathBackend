@@ -1,7 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const { auth } = require("../middleware/auth");
-const { strictAuthLimiter } = require("../middleware/rateLimiters");
+const {
+  strictAuthLimiter,
+  accountLockoutMiddleware,
+} = require("../middleware/rateLimiters");
 const {
   validateRegister,
   validateLogin,
@@ -23,7 +26,13 @@ const {
 
 // Public routes
 router.post("/register", strictAuthLimiter, validateRegister, register);
-router.post("/login", strictAuthLimiter, validateLogin, login);
+router.post(
+  "/login",
+  strictAuthLimiter,
+  accountLockoutMiddleware,
+  validateLogin,
+  login,
+);
 router.post(
   "/forgot-password",
   strictAuthLimiter,
