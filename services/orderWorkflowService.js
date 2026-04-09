@@ -61,6 +61,15 @@ const ORDER_STATUS_EMAIL_LABELS = {
   cancelled: "Cancelled",
 };
 
+const normalizeOptionalGatewayValue = (value) => {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  const normalized = String(value).trim();
+  return normalized ? normalized : undefined;
+};
+
 const generateNextOrderCode = async (retries = 3) => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
@@ -1269,10 +1278,16 @@ const createPersistedOrder = async ({
     paymentStatus:
       paymentData.paymentStatus ||
       (orderFields.paymentMethod === "cash" ? "pending" : "completed"),
-    paymentGateway: paymentData.paymentGateway || "",
-    paymentGatewayOrderId: paymentData.paymentGatewayOrderId || "",
-    paymentGatewayPaymentId: paymentData.paymentGatewayPaymentId || "",
-    paymentGatewaySignature: paymentData.paymentGatewaySignature || "",
+    paymentGateway: normalizeOptionalGatewayValue(paymentData.paymentGateway),
+    paymentGatewayOrderId: normalizeOptionalGatewayValue(
+      paymentData.paymentGatewayOrderId,
+    ),
+    paymentGatewayPaymentId: normalizeOptionalGatewayValue(
+      paymentData.paymentGatewayPaymentId,
+    ),
+    paymentGatewaySignature: normalizeOptionalGatewayValue(
+      paymentData.paymentGatewaySignature,
+    ),
     clientOrderRequestId: String(orderData?.clientOrderRequestId || "").trim(),
     statusTimeline: [
       {

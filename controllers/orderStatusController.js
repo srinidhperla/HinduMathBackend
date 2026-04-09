@@ -19,23 +19,40 @@ const populateOrderDetails = async (order) => {
   await order.populate("assignedDeliveryPartner", "name phone");
 };
 
-const syncOrderPaymentStatus = (order) => {
-  const paymentMethod = String(order?.paymentMethod || "").toLowerCase();
-  const status = String(order?.status || "").toLowerCase();
-  const isOnlinePayment = paymentMethod === "upi" || paymentMethod === "card";
+const resolvePaymentStatus = ({
+  paymentMethod,
+  status,
+  currentPaymentStatus,
+}) => {
+  const normalizedPaymentMethod = String(paymentMethod || "").toLowerCase();
+  const normalizedStatus = String(status || "").toLowerCase();
+  const isOnlinePayment =
+    normalizedPaymentMethod === "upi" || normalizedPaymentMethod === "card";
 
-  if (status === "cancelled") {
-    order.paymentStatus = "failed";
-    return;
+  if (normalizedStatus === "cancelled") {
+    return "failed";
   }
 
   if (isOnlinePayment) {
-    order.paymentStatus = "completed";
-    return;
+    return "completed";
   }
 
-  if (paymentMethod === "cash") {
-    order.paymentStatus = status === "delivered" ? "completed" : "pending";
+  if (normalizedPaymentMethod === "cash") {
+    return normalizedStatus === "delivered" ? "completed" : "pending";
+  }
+
+  return currentPaymentStatus;
+};
+
+const syncOrderPaymentStatus = (order) => {
+  const nextPaymentStatus = resolvePaymentStatus({
+    paymentMethod: order?.paymentMethod,
+    status: order?.status,
+    currentPaymentStatus: order?.paymentStatus,
+  });
+
+  if (nextPaymentStatus) {
+    order.paymentStatus = nextPaymentStatus;
   }
 };
 
@@ -136,15 +153,6 @@ const updateOrderStatus = async (req, res) => {
       }
     }
 
-    // Sync payment status
-    const paymentStatusByStatus = {
-      cancelled: "failed",
-      delivered: "completed",
-    };
-    if (paymentStatusByStatus[status]) {
-      updateOps.$set.paymentStatus = paymentStatusByStatus[status];
-    }
-
     updateOps.$push.statusTimeline = {
       status,
       actorRole: "admin",
@@ -152,11 +160,23 @@ const updateOrderStatus = async (req, res) => {
     };
 
     // Capture previous status BEFORE the update for status transition detection
-    const orderBefore = await Order.findById(req.params.id).select("status").lean();
+    const orderBefore = await Order.findById(req.params.id)
+      .select("status paymentMethod paymentStatus")
+      .lean();
     if (!orderBefore) {
       return res.status(404).json({ message: "Order not found" });
     }
     const previousStatus = orderBefore.status;
+
+    const nextPaymentStatus = resolvePaymentStatus({
+      paymentMethod: orderBefore.paymentMethod,
+      status,
+      currentPaymentStatus: orderBefore.paymentStatus,
+    });
+
+    if (nextPaymentStatus) {
+      updateOps.$set.paymentStatus = nextPaymentStatus;
+    }
 
     // Use findOneAndUpdate with conditions to prevent race conditions
     const order = await Order.findOneAndUpdate(

@@ -1,5 +1,14 @@
 const mongoose = require("mongoose");
 
+const normalizeOptionalString = (value) => {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  const normalized = String(value).trim();
+  return normalized ? normalized : undefined;
+};
+
 const orderSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
@@ -166,23 +175,27 @@ const orderSchema = new mongoose.Schema({
   },
   paymentGateway: {
     type: String,
-    default: "",
+    default: undefined,
     trim: true,
+    set: normalizeOptionalString,
   },
   paymentGatewayOrderId: {
     type: String,
-    default: "",
+    default: undefined,
     trim: true,
+    set: normalizeOptionalString,
   },
   paymentGatewayPaymentId: {
     type: String,
-    default: "",
+    default: undefined,
     trim: true,
+    set: normalizeOptionalString,
   },
   paymentGatewaySignature: {
     type: String,
-    default: "",
+    default: undefined,
     trim: true,
+    set: normalizeOptionalString,
   },
   clientOrderRequestId: {
     type: String,
@@ -276,6 +289,17 @@ orderSchema.pre("validate", function (next) {
     this.rejectionReason = undefined;
   }
 
+  this.paymentGateway = normalizeOptionalString(this.paymentGateway);
+  this.paymentGatewayOrderId = normalizeOptionalString(
+    this.paymentGatewayOrderId,
+  );
+  this.paymentGatewayPaymentId = normalizeOptionalString(
+    this.paymentGatewayPaymentId,
+  );
+  this.paymentGatewaySignature = normalizeOptionalString(
+    this.paymentGatewaySignature,
+  );
+
   next();
 });
 
@@ -288,7 +312,15 @@ orderSchema.pre("save", function (next) {
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index(
   { paymentGatewayPaymentId: 1 },
-  { unique: true, sparse: true },
+  {
+    unique: true,
+    partialFilterExpression: {
+      paymentGatewayPaymentId: {
+        $exists: true,
+        $type: "string",
+      },
+    },
+  },
 );
 
 const Order = mongoose.model("Order", orderSchema);
