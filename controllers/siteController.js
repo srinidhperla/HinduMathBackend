@@ -77,6 +77,7 @@ exports.updateSettings = async (req, res) => {
       coupons,
       deliverySettings,
       categoryOrder,
+      categorySettings,
     } = req.body;
     const updatePayload = {};
 
@@ -89,6 +90,9 @@ exports.updateSettings = async (req, res) => {
     }
     if (categoryOrder !== undefined)
       updatePayload.categoryOrder = categoryOrder;
+    if (categorySettings !== undefined) {
+      updatePayload.categorySettings = categorySettings;
+    }
 
     const content = await SiteContent.findOneAndUpdate(
       { singletonKey: SITE_KEY },

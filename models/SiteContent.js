@@ -73,6 +73,22 @@ const couponSchema = new mongoose.Schema(
   { _id: true },
 );
 
+const categorySettingSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: false },
+);
+
 const deliverySlotSchema = new mongoose.Schema(
   {
     startTime: {
@@ -325,6 +341,16 @@ const siteContentSchema = new mongoose.Schema(
         },
       ],
       default: ["cakes", "pastries", "breads", "cookies", "custom"],
+    },
+    categorySettings: {
+      type: [categorySettingSchema],
+      default: [
+        { name: "cakes", isActive: true },
+        { name: "pastries", isActive: true },
+        { name: "breads", isActive: true },
+        { name: "cookies", isActive: true },
+        { name: "custom", isActive: true },
+      ],
     },
     galleryItems: {
       type: [galleryItemSchema],
