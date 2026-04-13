@@ -131,12 +131,13 @@ const updateProduct = async (req, res) => {
           ? [existingProduct.image]
           : [];
 
+    const hasNewImageUpload = Array.isArray(req.files) && req.files.length > 0;
     const keptExistingImages = payload.images.length
       ? payload.images
       : existingImages;
     let nextImages = keptExistingImages;
 
-    if (req.files?.length) {
+    if (hasNewImageUpload) {
       const savedNewImages = await saveImageFiles(req.files);
       const newImageMap = new Map(
         savedNewImages.map((imagePath, index) => [
@@ -158,14 +159,16 @@ const updateProduct = async (req, res) => {
       });
     }
 
-    // Only delete images that were actually part of this product's existing images
+    // Keep existing Cloudinary assets unless this edit uploaded a replacement image.
     const removedImages = existingImages.filter(
       (imagePath) =>
         !nextImages.includes(imagePath) &&
         existingProduct.images?.includes(imagePath),
     );
     payload.images = nextImages;
-    await deleteImageFiles(removedImages);
+    if (hasNewImageUpload && removedImages.length > 0) {
+      await deleteImageFiles(removedImages);
+    }
 
     payload.image = payload.images[0] || existingProduct.image;
     if (payload.displayOrder === undefined) {
