@@ -1,6 +1,6 @@
 const express = require("express");
 const { auth, isAdmin } = require("../middleware/auth");
-const { sendTestAlertEmail } = require("../controllers/siteController");
+const { sendTestAlertEmail } = require("../controllers/siteAlertEmailController");
 
 const router = express.Router();
 

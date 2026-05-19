@@ -1,6 +1,128 @@
 const mongoose = require("mongoose");
 const { GALLERY_IMAGE_URLS } = require("../config/galleryImages");
 
+const galleryFieldSectionSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, trim: true },
+    title: { type: String, required: true, trim: true },
+    area: { type: String, enum: ["general", "extras"], default: "general" },
+    isCustom: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
+const galleryOptionCatalogSchema = new mongoose.Schema(
+  {
+    sectionKey: { type: String, required: true, trim: true },
+    options: [{ type: String, trim: true }],
+  },
+  { _id: false },
+);
+
+const galleryOptionPriceSchema = new mongoose.Schema(
+  {
+    sectionKey: { type: String, required: true, trim: true },
+    sectionTitle: { type: String, required: true, trim: true },
+    option: { type: String, required: true, trim: true },
+    price: { type: Number, default: 0, min: 0 },
+  },
+  { _id: false },
+);
+
+const galleryCombinationSelectionSchema = new mongoose.Schema(
+  {
+    sectionKey: { type: String, required: true, trim: true },
+    sectionTitle: { type: String, required: true, trim: true },
+    option: { type: String, required: true, trim: true },
+  },
+  { _id: false },
+);
+
+const galleryCombinationPriceSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, trim: true },
+    label: { type: String, required: true, trim: true },
+    price: { type: Number, default: 0, min: 0 },
+    isEnabled: { type: Boolean, default: true },
+    selections: {
+      type: [galleryCombinationSelectionSchema],
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
+const gallerySectionOptionSchema = new mongoose.Schema(
+  {
+    sectionKey: { type: String, required: true, trim: true },
+    options: [{ type: String, trim: true }],
+  },
+  { _id: false },
+);
+
+const galleryCustomSectionSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, trim: true },
+    title: { type: String, required: true, trim: true },
+    area: { type: String, enum: ["general", "extras"], default: "general" },
+    options: [{ type: String, trim: true }],
+  },
+  { _id: false },
+);
+
+const defaultGalleryFieldSections = () => [
+  { key: "cakeTypes", title: "Cake Type", area: "general", isCustom: false },
+  { key: "eggOptions", title: "Egg Type", area: "general", isCustom: false },
+  { key: "flavors", title: "Flavor", area: "general", isCustom: false },
+  { key: "fondantOptions", title: "Fondant", area: "general", isCustom: false },
+  { key: "photoOptions", title: "Photo", area: "extras", isCustom: false },
+  { key: "extras", title: "Extras", area: "extras", isCustom: false },
+];
+
+const defaultGalleryOptionCatalogs = () => [
+  { sectionKey: "cakeTypes", options: ["Cool cake", "Butter Cream cake"] },
+  { sectionKey: "eggOptions", options: ["Egg", "Eggless"] },
+  {
+    sectionKey: "flavors",
+    options: [
+      "Vanilla",
+      "Butterscotch",
+      "Strawberry",
+      "Chocolate",
+      "Pineapple",
+      "Red Velvet",
+    ],
+  },
+  { sectionKey: "fondantOptions", options: ["Full fondant", "Semi fondant"] },
+  {
+    sectionKey: "photoOptions",
+    options: ["Edible photo", "Non edible photo"],
+  },
+  { sectionKey: "extras", options: ["Deposit", "Doll"] },
+];
+
+const galleryFieldConfigSchema = new mongoose.Schema(
+  {
+    fieldSections: {
+      type: [galleryFieldSectionSchema],
+      default: defaultGalleryFieldSections,
+    },
+    optionCatalogs: {
+      type: [galleryOptionCatalogSchema],
+      default: defaultGalleryOptionCatalogs,
+    },
+    optionPrices: {
+      type: [galleryOptionPriceSchema],
+      default: [],
+    },
+    combinationPrices: {
+      type: [galleryCombinationPriceSchema],
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
 const galleryItemSchema = new mongoose.Schema(
   {
     title: {
@@ -27,6 +149,122 @@ const galleryItemSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+    price: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    priceLabel: {
+      type: String,
+      default: "Starting at",
+      trim: true,
+    },
+    configurationNote: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    optionPrices: {
+      type: [
+        {
+          sectionKey: { type: String, required: true, trim: true },
+          sectionTitle: { type: String, required: true, trim: true },
+          option: { type: String, required: true, trim: true },
+          price: { type: Number, default: 0, min: 0 },
+        },
+      ],
+      default: [],
+    },
+    sectionOptions: {
+      type: [gallerySectionOptionSchema],
+      default: [],
+    },
+    cakeTypes: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: ["Cool cake", "Butter Cream cake"],
+    },
+    eggOptions: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: ["Egg", "Eggless"],
+    },
+    weightRange: {
+      min: {
+        type: Number,
+        default: 1,
+        min: 0,
+      },
+      max: {
+        type: Number,
+        default: 5,
+        min: 0,
+      },
+      unit: {
+        type: String,
+        default: "kg",
+        trim: true,
+      },
+    },
+    flavors: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: [
+        "Vanilla",
+        "Butterscotch",
+        "Strawberry",
+        "Chocolate",
+        "Pineapple",
+        "Red Velvet",
+      ],
+    },
+    fondantOptions: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: ["Full fondant", "Semi fondant"],
+    },
+    photoOptions: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: ["Edible photo", "Non edible photo"],
+    },
+    extras: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: ["Deposit", "Doll"],
+    },
+    fieldSections: {
+      type: [galleryFieldSectionSchema],
+      default: defaultGalleryFieldSections,
+    },
+    customSections: {
+      type: [galleryCustomSectionSchema],
+      default: [],
     },
   },
   { timestamps: true },
@@ -352,6 +590,13 @@ const siteContentSchema = new mongoose.Schema(
         { name: "custom", isActive: true },
       ],
     },
+    galleryFieldConfig: {
+      type: galleryFieldConfigSchema,
+      default: () => ({
+        fieldSections: defaultGalleryFieldSections(),
+        optionCatalogs: defaultGalleryOptionCatalogs(),
+      }),
+    },
     galleryItems: {
       type: [galleryItemSchema],
       default: [
@@ -361,6 +606,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Wedding",
           imageUrl: GALLERY_IMAGE_URLS.cake1,
           likes: 234,
+          price: 3500,
+          priceLabel: "Starting at",
+          configurationNote: "Custom floral work priced after design confirmation",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 2, max: 8, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Birthday Fun",
@@ -368,6 +630,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Birthday",
           imageUrl: GALLERY_IMAGE_URLS.cake2,
           likes: 189,
+          price: 1800,
+          priceLabel: "Starting at",
+          configurationNote: "Price depends on weight and topper details",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 1, max: 5, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Chocolate Indulgence",
@@ -375,6 +654,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Custom",
           imageUrl: GALLERY_IMAGE_URLS.cake3,
           likes: 312,
+          price: 2200,
+          priceLabel: "Starting at",
+          configurationNote: "Ganache finish and toppings affect final price",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 1, max: 6, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Fresh Fruit Delight",
@@ -382,6 +678,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Custom",
           imageUrl: GALLERY_IMAGE_URLS.cake4,
           likes: 156,
+          price: 2000,
+          priceLabel: "Starting at",
+          configurationNote: "Seasonal fruit selection may change pricing",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 1, max: 6, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Red Velvet Dream",
@@ -389,6 +702,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Birthday",
           imageUrl: GALLERY_IMAGE_URLS.cake5,
           likes: 278,
+          price: 1900,
+          priceLabel: "Starting at",
+          configurationNote: "Message, size, and decor can be configured",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 1, max: 5, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Golden Anniversary",
@@ -396,6 +726,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Wedding",
           imageUrl: GALLERY_IMAGE_URLS.cake6,
           likes: 198,
+          price: 4200,
+          priceLabel: "Starting at",
+          configurationNote: "Metallic finish and tiers are priced separately",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 2, max: 10, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Party Confetti Cake",
@@ -403,6 +750,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Birthday",
           imageUrl: GALLERY_IMAGE_URLS.cake7,
           likes: 167,
+          price: 1600,
+          priceLabel: "Starting at",
+          configurationNote: "Theme color changes available on request",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 1, max: 4, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
         {
           title: "Gourmet Cupcake Collection",
@@ -410,6 +774,23 @@ const siteContentSchema = new mongoose.Schema(
           category: "Cupcakes",
           imageUrl: GALLERY_IMAGE_URLS.cake8,
           likes: 245,
+          price: 900,
+          priceLabel: "Starting at",
+          configurationNote: "Per-dozen pricing varies by flavor assortment",
+          cakeTypes: ["Cool cake", "Butter Cream cake"],
+          eggOptions: ["Egg", "Eggless"],
+          weightRange: { min: 1, max: 3, unit: "kg" },
+          flavors: [
+            "Vanilla",
+            "Butterscotch",
+            "Strawberry",
+            "Chocolate",
+            "Pineapple",
+            "Red Velvet",
+          ],
+          fondantOptions: ["Full fondant", "Semi fondant"],
+          photoOptions: ["Edible photo", "Non edible photo"],
+          extras: ["Deposit", "Doll"],
         },
       ],
     },

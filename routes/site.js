@@ -6,20 +6,23 @@ const {
   getSiteContent,
   updateSettings,
   updateCategoryOrder,
-  addGalleryItem,
-  deleteGalleryItem,
   getAlertStatus,
   getPushAlertStatus,
   getAdminAlertPreferences,
   updateAdminAlertPreferences,
   getPaymentStatus,
   subscribePushAlerts,
-  sendTestAlertEmail,
   unsubscribePushAlerts,
   subscribeFcmAlerts,
   unsubscribeFcmAlerts,
-  sendContactMessage,
 } = require("../controllers/siteController");
+const { sendTestAlertEmail } = require("../controllers/siteAlertEmailController");
+const { sendContactMessage } = require("../controllers/siteContactController");
+const {
+  addGalleryItem,
+  updateGalleryItem,
+  deleteGalleryItem,
+} = require("../controllers/siteGalleryController");
 const { strictAuthLimiter } = require("../middleware/rateLimiters");
 const { cacheResponse } = require("../middleware/responseCache");
 
@@ -46,6 +49,13 @@ router.delete(
 );
 router.delete("/alerts/fcm-tokens", auth, isAdmin, unsubscribeFcmAlerts);
 router.post("/gallery", auth, isAdmin, upload.single("image"), addGalleryItem);
+router.put(
+  "/gallery/:itemId",
+  auth,
+  isAdmin,
+  upload.single("image"),
+  updateGalleryItem,
+);
 router.delete("/gallery/:itemId", auth, isAdmin, deleteGalleryItem);
 router.post("/contact", strictAuthLimiter, sendContactMessage);
 

@@ -1,12 +1,7 @@
 const SiteContent = require("../models/SiteContent");
 const User = require("../models/User");
-const {
-  getReminderStatus,
-  sendTestReminderEmail,
-} = require("../services/orderReminderService");
-const {
-  resolveAdminEmailRecipients,
-} = require("../services/adminEmailService");
+const { SITE_KEY } = require("../config/constants");
+const { getReminderStatus } = require("../services/orderReminderService");
 const {
   getPushStatus,
   subscribeAdminPush,
@@ -14,48 +9,16 @@ const {
   subscribeAdminFcm,
   unsubscribeAdminFcm,
 } = require("../services/pushNotificationService");
-const { sendEmail, getEmailErrorDetails } = require("../services/emailService");
-const { clearPublicApiCache } = require("../services/cacheStore");
 const { emitAdminDataUpdated } = require("../services/orderEvents");
-const { SITE_KEY } = require("../config/constants");
-const imageStorage = require("../services/cloudinaryStorage");
-const { processUploadedImage } = require("../services/imageProcessing");
-const logger = require("../utils/logger");
-
-const escapeHtml = (value) => {
-  const str = String(value || "");
-  // Remove zero-width and control characters that could be used for attacks
-  const sanitized = str.replace(/[\u200B-\u200D\uFEFF\u202A-\u202E]/g, "");
-  return sanitized
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-    .replace(/`/g, "&#96;")
-    .replace(/\//g, "&#47;");
-};
-
-const getOrCreateSiteContent = async () => {
-  let content = await SiteContent.findOne({ singletonKey: SITE_KEY });
-
-  if (!content) {
-    content = await SiteContent.create({ singletonKey: SITE_KEY });
-  }
-
-  return content;
-};
-
-const invalidatePublicCache = async (context = {}) => {
-  try {
-    await clearPublicApiCache();
-  } catch (error) {
-    logger.warn("Failed to clear public API cache after site mutation", {
-      error: error?.message || String(error),
-      ...context,
-    });
-  }
-};
+const {
+  buildGalleryFieldConfigPayload,
+  getGalleryFieldConfig,
+  syncGalleryItemsWithFieldConfig,
+} = require("../services/galleryAdminService");
+const {
+  getOrCreateSiteContent,
+  invalidatePublicCache,
+} = require("../services/siteContentService");
 
 exports.getSiteContent = async (req, res) => {
   try {
@@ -78,6 +41,7 @@ exports.updateSettings = async (req, res) => {
       deliverySettings,
       categoryOrder,
       categorySettings,
+      galleryFieldConfig,
     } = req.body;
     const updatePayload = {};
 
@@ -92,6 +56,25 @@ exports.updateSettings = async (req, res) => {
       updatePayload.categoryOrder = categoryOrder;
     if (categorySettings !== undefined) {
       updatePayload.categorySettings = categorySettings;
+    }
+    if (galleryFieldConfig !== undefined) {
+      const content = await getOrCreateSiteContent();
+      const currentFieldConfig = getGalleryFieldConfig(content);
+
+      Object.assign(content, updatePayload);
+      content.galleryFieldConfig = buildGalleryFieldConfigPayload(
+        galleryFieldConfig,
+        currentFieldConfig,
+      );
+      syncGalleryItemsWithFieldConfig(
+        content.galleryItems,
+        content.galleryFieldConfig,
+      );
+      await content.save();
+
+      await invalidatePublicCache({ action: "updateSettings" });
+      emitAdminDataUpdated("settings", { action: "updated" });
+      return res.json(content);
     }
 
     const content = await SiteContent.findOneAndUpdate(
@@ -157,80 +140,6 @@ exports.updateCategoryOrder = async (req, res) => {
       message: "Error updating category order",
       error: error.message,
     });
-  }
-};
-
-exports.addGalleryItem = async (req, res) => {
-  try {
-    const { title, description, category, likes } = req.body;
-    let imageUrl = req.body.imageUrl || "";
-
-    // Process uploaded images before storage so gallery assets stay lightweight.
-    if (req.file) {
-      const processedImage = await processUploadedImage(req.file);
-      const fileName = `gallery-${Date.now()}-${processedImage.fileName}`;
-      const result = await imageStorage.uploadFile(
-        processedImage.buffer,
-        fileName,
-        processedImage.mimeType,
-      );
-      imageUrl = result.url;
-    }
-
-    const content = await getOrCreateSiteContent();
-
-    content.galleryItems.unshift({
-      title,
-      description,
-      category,
-      imageUrl,
-      likes: Number.isFinite(likes) ? likes : 0,
-    });
-
-    await content.save();
-    await invalidatePublicCache({ action: "addGalleryItem" });
-    emitAdminDataUpdated("settings", { action: "gallery-item-added" });
-    res.status(201).json({
-      ...content.galleryItems[0].toObject(),
-      imageUrl: imageStorage.optimizeDeliveryUrl(
-        content.galleryItems[0].imageUrl,
-      ),
-    });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Error adding gallery item", error: error.message });
-  }
-};
-
-exports.deleteGalleryItem = async (req, res) => {
-  try {
-    const content = await getOrCreateSiteContent();
-    const galleryItem = content.galleryItems.id(req.params.itemId);
-
-    if (!galleryItem) {
-      return res.status(404).json({ message: "Gallery item not found" });
-    }
-
-    // Delete the image from Appwrite if it's stored there
-    const fileId = imageStorage.extractFileId(galleryItem.imageUrl);
-    if (fileId) {
-      await imageStorage.deleteFile(fileId);
-    }
-
-    galleryItem.deleteOne();
-    await content.save();
-    await invalidatePublicCache({ action: "deleteGalleryItem" });
-    emitAdminDataUpdated("settings", { action: "gallery-item-deleted" });
-
-    res.json({
-      message: "Gallery item deleted successfully",
-      id: req.params.itemId,
-    });
-  } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Error deleting gallery item", error: error.message });
   }
 };
 
@@ -399,123 +308,3 @@ exports.getPaymentStatus = async (req, res) => {
   }
 };
 
-exports.sendTestAlertEmail = async (req, res) => {
-  try {
-    const emailStatus = await getReminderStatus();
-    const result = await sendTestReminderEmail();
-
-    if (result.skipped) {
-      return res.status(400).json({
-        message:
-          result.reason === "email-not-configured"
-            ? "Email service is not configured yet."
-            : "Admin alert email recipient is not configured.",
-        emailStatus,
-      });
-    }
-
-    res.json({
-      message: `Test alert email sent to ${result.recipients?.join(", ") || result.recipient}`,
-      ...result,
-      emailStatus,
-    });
-  } catch (error) {
-    const emailError = getEmailErrorDetails(error);
-    const emailStatus = await getReminderStatus().catch(() => null);
-    logger.error("Test alert email failed", {
-      error: error?.message || String(error),
-      code: emailError.code,
-      responseCode: emailError.responseCode,
-      hint: emailError.hint,
-      emailStatus,
-    });
-    const statusCode =
-      emailError.code === "EAUTH" ||
-      emailError.code === "ESOCKET" ||
-      emailError.code === "ETIMEDOUT"
-        ? 503
-        : 500;
-    res.status(statusCode).json({
-      message: emailError.hint,
-      error: error.message,
-      code: emailError.code,
-      responseCode: emailError.responseCode,
-      emailStatus,
-    });
-  }
-};
-
-exports.sendContactMessage = async (req, res) => {
-  try {
-    const { name, email, phone, subject, message } = req.body;
-    const trimmedEmail = String(email || "").trim();
-    const trimmedPhone = String(phone || "").trim();
-
-    if (!name || !email || !subject || !message) {
-      return res
-        .status(400)
-        .json({ message: "Name, email, subject, and message are required." });
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      return res.status(400).json({ message: "Valid email is required." });
-    }
-
-    if (!/^[+]?[0-9\s-]{10,15}$/.test(trimmedPhone)) {
-      return res
-        .status(400)
-        .json({ message: "Valid phone number is required." });
-    }
-
-    const adminRecipients = await resolveAdminEmailRecipients({
-      purpose: "contact",
-      includeAdminUsers: true,
-      includeSiteEmail: true,
-      respectAlertPreferences: false,
-    });
-
-    if (!adminRecipients.recipients.length) {
-      return res.status(503).json({
-        message: "Contact email recipients are not configured yet.",
-      });
-    }
-
-    const result = await sendEmail({
-      to: adminRecipients.recipients,
-      subject: `Contact Form: ${subject}`,
-      html: `
-        <h2>New Contact Message</h2>
-        <p><strong>Name:</strong> ${escapeHtml(name)}</p>
-        <p><strong>Email:</strong> ${escapeHtml(trimmedEmail)}</p>
-        <p><strong>Phone:</strong> ${escapeHtml(trimmedPhone || "Not provided")}</p>
-        <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
-        <hr />
-        <p>${escapeHtml(message).replace(/\n/g, "<br />")}</p>
-      `,
-      replyTo: trimmedEmail,
-    });
-
-    if (result?.skipped) {
-      return res.status(503).json({
-        message: "Email service is not configured. Please contact us directly.",
-      });
-    }
-
-    res.json({ message: "Message sent successfully." });
-  } catch (error) {
-    const emailError = getEmailErrorDetails(error);
-    logger.error("Contact form email failed", {
-      error: error?.message || String(error),
-      code: emailError.code,
-      responseCode: emailError.responseCode,
-      hint: emailError.hint,
-      to: "configured-admin-recipients",
-      fromReplyTo: req.body?.email || "",
-      subject: req.body?.subject || "",
-    });
-    res.status(500).json({
-      message:
-        emailError.hint || "Failed to send message. Please try again later.",
-    });
-  }
-};
