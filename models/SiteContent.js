@@ -7,6 +7,11 @@ const galleryFieldSectionSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     area: { type: String, enum: ["general", "extras"], default: "general" },
     isCustom: { type: Boolean, default: false },
+    pricingMode: {
+      type: String,
+      enum: ["fixed", "per_kg"],
+      default: "fixed",
+    },
   },
   { _id: false },
 );
@@ -71,12 +76,48 @@ const galleryCustomSectionSchema = new mongoose.Schema(
 );
 
 const defaultGalleryFieldSections = () => [
-  { key: "cakeTypes", title: "Cake Type", area: "general", isCustom: false },
-  { key: "eggOptions", title: "Egg Type", area: "general", isCustom: false },
-  { key: "flavors", title: "Flavor", area: "general", isCustom: false },
-  { key: "fondantOptions", title: "Fondant", area: "general", isCustom: false },
-  { key: "photoOptions", title: "Photo", area: "extras", isCustom: false },
-  { key: "extras", title: "Extras", area: "extras", isCustom: false },
+  {
+    key: "cakeTypes",
+    title: "Cake Type",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
+  {
+    key: "eggOptions",
+    title: "Egg Type",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
+  {
+    key: "flavors",
+    title: "Flavor",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
+  {
+    key: "fondantOptions",
+    title: "Fondant",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
+  {
+    key: "photoOptions",
+    title: "Photo",
+    area: "extras",
+    isCustom: false,
+    pricingMode: "fixed",
+  },
+  {
+    key: "extras",
+    title: "Extras",
+    area: "extras",
+    isCustom: false,
+    pricingMode: "fixed",
+  },
 ];
 
 const defaultGalleryOptionCatalogs = () => [
@@ -139,6 +180,15 @@ const galleryItemSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+    },
+    categories: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: [],
     },
     imageUrl: {
       type: String,
@@ -604,6 +654,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Wedding Elegance",
           description: "Three-tier floral wedding cake",
           category: "Wedding",
+          categories: ["Wedding"],
           imageUrl: GALLERY_IMAGE_URLS.cake1,
           likes: 234,
           price: 3500,
@@ -628,6 +679,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Birthday Fun",
           description: "Colorful birthday cake with drip",
           category: "Birthday",
+          categories: ["Birthday"],
           imageUrl: GALLERY_IMAGE_URLS.cake2,
           likes: 189,
           price: 1800,
@@ -652,6 +704,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Chocolate Indulgence",
           description: "Rich dark chocolate cake with ganache drip",
           category: "Custom",
+          categories: ["Custom"],
           imageUrl: GALLERY_IMAGE_URLS.cake3,
           likes: 312,
           price: 2200,
@@ -676,6 +729,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Fresh Fruit Delight",
           description: "Light vanilla sponge topped with fresh fruits",
           category: "Custom",
+          categories: ["Custom"],
           imageUrl: GALLERY_IMAGE_URLS.cake4,
           likes: 156,
           price: 2000,
@@ -700,6 +754,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Red Velvet Dream",
           description: "Classic red velvet with cream cheese frosting",
           category: "Birthday",
+          categories: ["Birthday"],
           imageUrl: GALLERY_IMAGE_URLS.cake5,
           likes: 278,
           price: 1900,
@@ -724,6 +779,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Golden Anniversary",
           description: "Luxurious gold-themed celebration cake",
           category: "Wedding",
+          categories: ["Wedding"],
           imageUrl: GALLERY_IMAGE_URLS.cake6,
           likes: 198,
           price: 4200,
@@ -748,6 +804,7 @@ const siteContentSchema = new mongoose.Schema(
           title: "Party Confetti Cake",
           description: "Funfetti cake with rainbow sprinkles",
           category: "Birthday",
+          categories: ["Birthday"],
           imageUrl: GALLERY_IMAGE_URLS.cake7,
           likes: 167,
           price: 1600,

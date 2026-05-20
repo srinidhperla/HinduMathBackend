@@ -22,17 +22,48 @@ const DEFAULT_GALLERY_OPTIONS = {
 };
 
 const DEFAULT_GALLERY_FIELD_SECTIONS = [
-  { key: "cakeTypes", title: "Cake Type", area: "general", isCustom: false },
-  { key: "eggOptions", title: "Egg Type", area: "general", isCustom: false },
-  { key: "flavors", title: "Flavor", area: "general", isCustom: false },
+  {
+    key: "cakeTypes",
+    title: "Cake Type",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
+  {
+    key: "eggOptions",
+    title: "Egg Type",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
+  {
+    key: "flavors",
+    title: "Flavor",
+    area: "general",
+    isCustom: false,
+    pricingMode: "per_kg",
+  },
   {
     key: "fondantOptions",
     title: "Fondant",
     area: "general",
     isCustom: false,
+    pricingMode: "per_kg",
   },
-  { key: "photoOptions", title: "Photo", area: "extras", isCustom: false },
-  { key: "extras", title: "Extras", area: "extras", isCustom: false },
+  {
+    key: "photoOptions",
+    title: "Photo",
+    area: "extras",
+    isCustom: false,
+    pricingMode: "fixed",
+  },
+  {
+    key: "extras",
+    title: "Extras",
+    area: "extras",
+    isCustom: false,
+    pricingMode: "fixed",
+  },
 ];
 
 const BUILT_IN_SECTION_KEYS = Object.keys(DEFAULT_GALLERY_OPTIONS).filter(
@@ -118,6 +149,12 @@ const normalizeFieldSections = (value, fallback = []) => {
       title: String(section?.title || "").trim(),
       area: section?.area === "extras" ? "extras" : "general",
       isCustom: Boolean(section?.isCustom),
+      pricingMode:
+        section?.pricingMode === "per_kg" ||
+        (section?.pricingMode !== "fixed" &&
+          section?.area !== "extras")
+          ? "per_kg"
+          : "fixed",
     }))
     .filter((section) => section.key && section.title);
 
@@ -439,6 +476,23 @@ const buildFieldTitleMap = (galleryFieldConfig = {}) =>
     ]),
   );
 
+const normalizeCategories = (value, fallback = []) => {
+  const source = parseJsonValue(value, value);
+  const fallbackList = Array.isArray(fallback)
+    ? fallback
+    : [String(fallback || "").trim()].filter(Boolean);
+
+  if (Array.isArray(source)) {
+    return toUniqueOptions(source);
+  }
+
+  if (typeof source === "string") {
+    return toUniqueOptions(source.split(","));
+  }
+
+  return toUniqueOptions(fallbackList);
+};
+
 const isDirectToggleSection = (section = {}) =>
   section?.area === "extras" && Boolean(section?.isCustom);
 
@@ -671,7 +725,6 @@ const buildGalleryItemPayload = (
 
   const normalizedBase = {
     title: String(source.title || fallbackItem?.title || "").trim(),
-    category: String(source.category || fallbackItem?.category || "").trim(),
     description: String(
       source.description ?? fallbackItem?.description ?? "",
     ).trim(),
@@ -688,6 +741,17 @@ const buildGalleryItemPayload = (
       fallbackItem?.weightRange || DEFAULT_GALLERY_OPTIONS.weightRange,
     ),
   };
+
+  const categories = normalizeCategories(source.categories, [
+    ...(Array.isArray(fallbackItem?.categories) ? fallbackItem.categories : []),
+    String(source.category || "").trim(),
+    String(fallbackItem?.category || "").trim(),
+  ]);
+
+  normalizedBase.categories = categories;
+  normalizedBase.category =
+    categories[0] ||
+    String(source.category || fallbackItem?.category || "").trim();
 
   const itemWithSelections = {
     ...fallbackItem,
@@ -743,6 +807,10 @@ const formatGalleryItemResponse = (galleryItem) => {
 
   return {
     ...source,
+    categories: normalizeCategories(source.categories, [source.category]),
+    category:
+      normalizeCategories(source.categories, [source.category])[0] ||
+      String(source.category || "").trim(),
     imageUrl: imageStorage.optimizeDeliveryUrl(source.imageUrl),
   };
 };
