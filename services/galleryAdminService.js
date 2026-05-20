@@ -28,6 +28,7 @@ const DEFAULT_GALLERY_FIELD_SECTIONS = [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "eggOptions",
@@ -35,6 +36,7 @@ const DEFAULT_GALLERY_FIELD_SECTIONS = [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "flavors",
@@ -42,6 +44,7 @@ const DEFAULT_GALLERY_FIELD_SECTIONS = [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "fondantOptions",
@@ -49,6 +52,7 @@ const DEFAULT_GALLERY_FIELD_SECTIONS = [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "photoOptions",
@@ -56,6 +60,7 @@ const DEFAULT_GALLERY_FIELD_SECTIONS = [
     area: "extras",
     isCustom: false,
     pricingMode: "fixed",
+    priceSource: "shared",
   },
   {
     key: "extras",
@@ -63,6 +68,7 @@ const DEFAULT_GALLERY_FIELD_SECTIONS = [
     area: "extras",
     isCustom: false,
     pricingMode: "fixed",
+    priceSource: "shared",
   },
 ];
 
@@ -155,6 +161,10 @@ const normalizeFieldSections = (value, fallback = []) => {
           section?.area !== "extras")
           ? "per_kg"
           : "fixed",
+      priceSource:
+        section?.area === "extras" && section?.priceSource === "per_image"
+          ? "per_image"
+          : "shared",
     }))
     .filter((section) => section.key && section.title);
 

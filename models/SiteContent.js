@@ -12,6 +12,11 @@ const galleryFieldSectionSchema = new mongoose.Schema(
       enum: ["fixed", "per_kg"],
       default: "fixed",
     },
+    priceSource: {
+      type: String,
+      enum: ["shared", "per_image"],
+      default: "shared",
+    },
   },
   { _id: false },
 );
@@ -82,6 +87,7 @@ const defaultGalleryFieldSections = () => [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "eggOptions",
@@ -89,6 +95,7 @@ const defaultGalleryFieldSections = () => [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "flavors",
@@ -96,6 +103,7 @@ const defaultGalleryFieldSections = () => [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "fondantOptions",
@@ -103,6 +111,7 @@ const defaultGalleryFieldSections = () => [
     area: "general",
     isCustom: false,
     pricingMode: "per_kg",
+    priceSource: "shared",
   },
   {
     key: "photoOptions",
@@ -110,6 +119,7 @@ const defaultGalleryFieldSections = () => [
     area: "extras",
     isCustom: false,
     pricingMode: "fixed",
+    priceSource: "shared",
   },
   {
     key: "extras",
@@ -117,6 +127,7 @@ const defaultGalleryFieldSections = () => [
     area: "extras",
     isCustom: false,
     pricingMode: "fixed",
+    priceSource: "shared",
   },
 ];
 
