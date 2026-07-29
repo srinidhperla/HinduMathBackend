@@ -10,6 +10,10 @@ const {
   syncGalleryItemsWithFieldConfig,
 } = require("../services/galleryAdminService");
 const {
+  streamGalleryBackupZip,
+  restoreGalleryImagesFromZip,
+} = require("../services/galleryBackupService");
+const {
   getOrCreateSiteContent,
   invalidatePublicCache,
 } = require("../services/siteContentService");
@@ -127,6 +131,50 @@ exports.updateGalleryItem = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: "Error updating gallery item",
+      error: error.message,
+    });
+  }
+};
+
+exports.exportGalleryImages = async (req, res) => {
+  try {
+    const content = await getOrCreateSiteContent();
+    await streamGalleryBackupZip(res, content.galleryItems);
+  } catch (error) {
+    if (!res.headersSent) {
+      res.status(500).json({
+        message: "Error exporting gallery images",
+        error: error.message,
+      });
+    } else {
+      res.end();
+    }
+  }
+};
+
+exports.importGalleryImages = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No backup zip file was uploaded" });
+    }
+
+    const content = await getOrCreateSiteContent();
+    const result = await restoreGalleryImagesFromZip(req.file.buffer, content);
+
+    if (result.updated.length > 0) {
+      await content.save();
+      await invalidatePublicCache({ action: "restoreGalleryImages" });
+      emitAdminDataUpdated("settings", { action: "gallery-images-restored" });
+    }
+
+    return res.json({
+      message: `Restored ${result.updated.length} image(s). ${result.skipped.length} file(s) skipped.`,
+      updated: result.updated,
+      skipped: result.skipped,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Error restoring gallery images",
       error: error.message,
     });
   }

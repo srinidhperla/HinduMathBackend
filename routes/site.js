@@ -22,6 +22,8 @@ const {
   addGalleryItem,
   updateGalleryItem,
   deleteGalleryItem,
+  exportGalleryImages,
+  importGalleryImages,
 } = require("../controllers/siteGalleryController");
 const { strictAuthLimiter } = require("../middleware/rateLimiters");
 const { cacheResponse } = require("../middleware/responseCache");
@@ -57,6 +59,14 @@ router.put(
   updateGalleryItem,
 );
 router.delete("/gallery/:itemId", auth, isAdmin, deleteGalleryItem);
+router.get("/gallery/backup", auth, isAdmin, exportGalleryImages);
+router.post(
+  "/gallery/restore",
+  auth,
+  isAdmin,
+  upload.uploadArchive.single("archive"),
+  importGalleryImages,
+);
 router.post("/contact", strictAuthLimiter, sendContactMessage);
 
 module.exports = router;

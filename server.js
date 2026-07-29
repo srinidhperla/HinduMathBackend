@@ -192,31 +192,32 @@ app.use("/api", routes);
 // Error handling middleware
 app.use(errorHandler);
 
-// Connect to MongoDB and start server
+// Start the HTTP server immediately so the app stays available while MongoDB reconnects.
 const PORT = process.env.PORT || 5000;
+
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    logger.error(
+      `Port ${PORT} is already in use. Stop the running server or set a different PORT in backend/.env.`,
+    );
+    process.exit(1);
+  }
+
+  logger.error("Server startup error", { error: error?.message || error });
+  process.exit(1);
+});
+
+server.listen(PORT, () => {
+  logger.info(`Server is running on port ${PORT}`);
+});
 
 connectDB()
   .then(async () => {
     await initCache();
     startOrderReminderService();
-
-    server.on("error", (error) => {
-      if (error?.code === "EADDRINUSE") {
-        logger.error(
-          `Port ${PORT} is already in use. Stop the running server or set a different PORT in backend/.env.`,
-        );
-        process.exit(1);
-      }
-
-      logger.error("Server startup error", { error: error?.message || error });
-      process.exit(1);
-    });
-
-    server.listen(PORT, () => {
-      logger.info(`Server is running on port ${PORT}`);
-    });
   })
   .catch((err) => {
-    logger.error("MongoDB connection error", { error: err.message });
-    process.exit(1);
+    logger.error("MongoDB connection failed after retries", {
+      error: err.message,
+    });
   });

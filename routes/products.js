@@ -30,6 +30,10 @@ const {
   renameCategory,
   deleteCategory,
 } = require("../controllers/productCategoryController");
+const {
+  exportProductImages,
+  importProductImages,
+} = require("../controllers/productBackupController");
 
 // Public routes
 router.get(
@@ -44,6 +48,17 @@ router.get(
   }),
   getAllProducts,
 );
+
+// Must be registered before "/:id" or Express treats "backup" as a product id.
+router.get("/backup", auth, isAdmin, exportProductImages);
+router.post(
+  "/restore",
+  auth,
+  isAdmin,
+  upload.uploadArchive.single("archive"),
+  importProductImages,
+);
+
 router.get("/:id", standardReadLimiter, getProduct);
 
 // Admin routes
