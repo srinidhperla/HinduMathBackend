@@ -7,6 +7,7 @@ router.use("/products", require("./products"));
 router.use("/orders", require("./orders"));
 router.use("/site", require("./site"));
 router.use("/admin", require("./admin"));
+router.use("/erp", require("./erp"));
 router.use("/maps", require("./maps"));
 router.use("/alert", require("./alert"));
 

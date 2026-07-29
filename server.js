@@ -84,6 +84,8 @@ const allowedOrigins = process.env.CORS_ORIGIN
   : [
       "http://localhost:5173",
       "http://localhost:3000",
+      // Hindumatha ERP (staff app) dev server
+      "http://localhost:5180",
       "https://hindumatha.me",
       "https://www.hindumatha.me",
     ];

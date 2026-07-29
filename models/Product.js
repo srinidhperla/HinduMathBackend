@@ -184,6 +184,97 @@ const productSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    /* ── ERP fields (added 2026-07) ──────────────────────────────────────
+     * All optional with defaults so existing website documents stay valid
+     * and the storefront behaves exactly as before. The ERP is the only
+     * consumer of costPrice / stock / barcode. */
+
+    // Channel control. Defaults keep every existing product on the website.
+    visibility: {
+      showOnWebsite: { type: Boolean, default: true },
+      allowOnlineOrder: { type: Boolean, default: true },
+      availableInBilling: { type: Boolean, default: true },
+      isActive: { type: Boolean, default: true },
+    },
+
+    sku: {
+      type: String,
+      trim: true,
+      uppercase: true,
+    },
+    barcode: {
+      type: String,
+      trim: true,
+    },
+    barcodeType: {
+      type: String,
+      enum: ["CODE128", "EAN13"],
+      default: "CODE128",
+    },
+
+    costPrice: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    gstRate: {
+      type: Number,
+      default: 5,
+      min: 0,
+    },
+    gstMode: {
+      type: String,
+      enum: ["inclusive", "exclusive"],
+      default: "inclusive",
+    },
+    hsnCode: {
+      type: String,
+      trim: true,
+      default: "1905",
+    },
+
+    trackStock: {
+      type: Boolean,
+      default: false,
+    },
+    stockUnit: {
+      type: String,
+      default: "pcs",
+    },
+    reorderLevel: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    isPerishable: {
+      type: Boolean,
+      default: false,
+    },
+    shelfLifeDays: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    // "inhouse" products are produced from a recipe; "resale" are bought in.
+    productType: {
+      type: String,
+      enum: ["inhouse", "resale"],
+      default: "inhouse",
+    },
+
+    // POS presentation only — the picture-first tile grid staff use.
+    erpEmoji: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    erpQuickSelect: {
+      type: Boolean,
+      default: false,
+    },
+
     createdAt: {
       type: Date,
       default: Date.now,
@@ -202,6 +293,25 @@ productSchema.index({
   occasion: "text",
 });
 productSchema.index({ category: 1, isAvailable: 1, displayOrder: 1 });
+productSchema.index({ "visibility.showOnWebsite": 1, "visibility.isActive": 1 });
+productSchema.index(
+  { barcode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      barcode: { $exists: true, $type: "string", $ne: "" },
+    },
+  },
+);
+productSchema.index(
+  { sku: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      sku: { $exists: true, $type: "string", $ne: "" },
+    },
+  },
+);
 
 const Product = mongoose.model("Product", productSchema);
 

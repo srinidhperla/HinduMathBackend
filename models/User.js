@@ -21,7 +21,17 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ["user", "admin", "delivery"],
+    // ERP staff roles (owner/manager/cashier/production) added 2026-07.
+    // Existing values are unchanged, so every current account stays valid.
+    enum: [
+      "user",
+      "admin",
+      "delivery",
+      "owner",
+      "manager",
+      "cashier",
+      "production",
+    ],
     default: "user",
   },
   phone: {
