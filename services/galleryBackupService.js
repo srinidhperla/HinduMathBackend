@@ -7,6 +7,7 @@ const {
   buildManifest,
   createCategorySequencer,
   downloadImage,
+  isImageAlive,
   isManifestEntry,
   resolveExtension,
   slugify,
@@ -97,13 +98,19 @@ const streamGalleryBackupZip = async (res, galleryItems = []) => {
   return manifest;
 };
 
-const restoreGalleryImagesFromZip = async (zipBuffer, content) => {
+/**
+ * @param {"missing"|"all"} mode  "missing" (default) only re-uploads images
+ *   whose current URL is dead, so intact images cost no Cloudinary usage and
+ *   are never needlessly replaced. "all" force-replaces every matched image.
+ */
+const restoreGalleryImagesFromZip = async (zipBuffer, content, { mode = "missing" } = {}) => {
   const entries = new AdmZip(zipBuffer)
     .getEntries()
     .filter((entry) => !entry.isDirectory && !isManifestEntry(entry.entryName));
 
   const updated = [];
   const skipped = [];
+  const alreadyHealthy = [];
 
   for (const entry of entries) {
     const itemId = entry.entryName.match(OBJECT_ID_PATTERN)?.[1];
@@ -127,6 +134,14 @@ const restoreGalleryImagesFromZip = async (zipBuffer, content) => {
     }
 
     try {
+      if (mode === "missing" && (await isImageAlive(galleryItem.imageUrl))) {
+        alreadyHealthy.push({
+          id: String(galleryItem._id),
+          title: galleryItem.title,
+        });
+        continue;
+      }
+
       const previousFileId = imageStorage.extractFileId(galleryItem.imageUrl);
       const uploadResult = await imageStorage.uploadFile(
         entry.getData(),
@@ -148,7 +163,7 @@ const restoreGalleryImagesFromZip = async (zipBuffer, content) => {
     }
   }
 
-  return { updated, skipped };
+  return { updated, skipped, alreadyHealthy };
 };
 
 module.exports = {

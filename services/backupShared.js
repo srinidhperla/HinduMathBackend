@@ -45,6 +45,30 @@ const downloadImage = async (imageUrl) => {
 };
 
 /**
+ * Cheap liveness probe: HEAD returns the status without transferring the image
+ * body, so checking costs effectively no Cloudinary bandwidth.
+ */
+const isImageAlive = async (imageUrl) => {
+  const url = String(imageUrl || "").trim();
+
+  if (!url) {
+    return false;
+  }
+
+  // Inline base64 lives in MongoDB, so it can never be missing from Cloudinary.
+  if (url.startsWith("data:")) {
+    return true;
+  }
+
+  try {
+    const response = await fetch(url, { method: "HEAD" });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Numbers entries per category so files sort predictably inside each folder.
  */
 const createCategorySequencer = () => {
@@ -77,6 +101,7 @@ module.exports = {
   buildManifest,
   createCategorySequencer,
   downloadImage,
+  isImageAlive,
   isManifestEntry,
   resolveExtension,
   slugify,

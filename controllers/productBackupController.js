@@ -28,7 +28,8 @@ exports.importProductImages = async (req, res) => {
       return res.status(400).json({ message: "No backup zip file was uploaded" });
     }
 
-    const result = await restoreProductImagesFromZip(req.file.buffer);
+    const mode = req.body?.mode === "all" ? "all" : "missing";
+    const result = await restoreProductImagesFromZip(req.file.buffer, { mode });
 
     if (result.updated.length > 0) {
       await invalidatePublicCache({ action: "restoreProductImages" });
@@ -36,9 +37,11 @@ exports.importProductImages = async (req, res) => {
     }
 
     return res.json({
-      message: `Restored ${result.updated.length} image(s). ${result.skipped.length} file(s) skipped.`,
+      message: `Restored ${result.updated.length} image(s).`,
+      mode,
       updated: result.updated,
       skipped: result.skipped,
+      alreadyHealthy: result.alreadyHealthy,
     });
   } catch (error) {
     return res.status(500).json({

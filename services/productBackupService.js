@@ -8,6 +8,7 @@ const {
   buildManifest,
   createCategorySequencer,
   downloadImage,
+  isImageAlive,
   isManifestEntry,
   resolveExtension,
   slugify,
@@ -126,13 +127,33 @@ const streamProductBackupZip = async (res, products = []) => {
   return manifest;
 };
 
-const restoreProductImagesFromZip = async (zipBuffer) => {
+/** Reads the URL currently stored in a given product image slot. */
+const readSlotUrl = (product, slot) => {
+  if (slot === MAIN_SLOT) {
+    return product.image;
+  }
+  if (slot.startsWith("img")) {
+    return product.images?.[Number(slot.slice(3))];
+  }
+  if (slot.startsWith("addon")) {
+    return product.addOns?.[Number(slot.slice(5))]?.image;
+  }
+  return "";
+};
+
+/**
+ * @param {"missing"|"all"} mode  "missing" (default) only re-uploads slots whose
+ *   current image is dead, so intact images cost no Cloudinary usage and are
+ *   never needlessly replaced. "all" force-replaces every matched image.
+ */
+const restoreProductImagesFromZip = async (zipBuffer, { mode = "missing" } = {}) => {
   const entries = new AdmZip(zipBuffer)
     .getEntries()
     .filter((entry) => !entry.isDirectory && !isManifestEntry(entry.entryName));
 
   const updated = [];
   const skipped = [];
+  const alreadyHealthy = [];
 
   // Group by product so each document is loaded and saved exactly once.
   const entriesByProductId = new Map();
@@ -175,6 +196,11 @@ const restoreProductImagesFromZip = async (zipBuffer) => {
 
     for (const { entry, slot } of slotEntries) {
       try {
+        if (mode === "missing" && (await isImageAlive(readSlotUrl(product, slot)))) {
+          alreadyHealthy.push({ id: productId, name: product.name, slot });
+          continue;
+        }
+
         const uploadResult = await imageStorage.uploadFile(
           entry.getData(),
           `product-${Date.now()}-${productId}-${slot}`,
@@ -241,7 +267,7 @@ const restoreProductImagesFromZip = async (zipBuffer) => {
     );
   }
 
-  return { updated, skipped };
+  return { updated, skipped, alreadyHealthy };
 };
 
 module.exports = {

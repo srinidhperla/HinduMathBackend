@@ -158,8 +158,11 @@ exports.importGalleryImages = async (req, res) => {
       return res.status(400).json({ message: "No backup zip file was uploaded" });
     }
 
+    const mode = req.body?.mode === "all" ? "all" : "missing";
     const content = await getOrCreateSiteContent();
-    const result = await restoreGalleryImagesFromZip(req.file.buffer, content);
+    const result = await restoreGalleryImagesFromZip(req.file.buffer, content, {
+      mode,
+    });
 
     if (result.updated.length > 0) {
       await content.save();
@@ -168,9 +171,11 @@ exports.importGalleryImages = async (req, res) => {
     }
 
     return res.json({
-      message: `Restored ${result.updated.length} image(s). ${result.skipped.length} file(s) skipped.`,
+      message: `Restored ${result.updated.length} image(s).`,
+      mode,
       updated: result.updated,
       skipped: result.skipped,
+      alreadyHealthy: result.alreadyHealthy,
     });
   } catch (error) {
     return res.status(500).json({
