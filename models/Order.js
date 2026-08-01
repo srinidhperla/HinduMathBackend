@@ -248,6 +248,30 @@ const orderSchema = new mongoose.Schema({
     enum: ["pending", "outForDelivery", "delivered"],
     default: "pending",
   },
+  /* ── ERP link fields (added 2026-07) ──
+   * Additive with defaults; existing orders stay valid. `source` lets reports
+   * split online vs counter revenue. `linkedBillId` records which ERP bill an
+   * order was billed as, so the same order can never be billed twice. */
+  source: {
+    type: String,
+    enum: ["website", "erp", "gallery", "phone", "walkin"],
+    default: "website",
+  },
+  linkedBillId: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  linkedBillNo: {
+    type: String,
+    trim: true,
+    default: "",
+  },
+  stockReserved: {
+    type: Boolean,
+    default: false,
+  },
+
   createdAt: {
     type: Date,
     default: Date.now,

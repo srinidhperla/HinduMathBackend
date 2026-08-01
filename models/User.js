@@ -34,6 +34,21 @@ const userSchema = new mongoose.Schema({
     ],
     default: "user",
   },
+  // Per-module ERP overrides. Empty = use the role's defaults
+  // (see controllers/erpUserController.js ROLE_DEFAULTS).
+  erpPermissions: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
+  },
+  // Set when an owner suspends ERP access. Keeps history, unlike deleting.
+  erpDisabledAt: {
+    type: String,
+    default: null,
+  },
+  lastLoginAt: {
+    type: Date,
+    default: null,
+  },
   phone: {
     type: String,
     trim: true,

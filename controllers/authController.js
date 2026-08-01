@@ -122,6 +122,13 @@ exports.login = async (req, res) => {
     // Clear failed login attempts on successful login
     clearFailedLogins(normalizedEmail);
 
+    /* Stamp the last sign-in so the ERP staff list can show who is actually
+     * using their account. Fire-and-forget: a failed write must never stop
+     * someone logging in. */
+    User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }).catch(
+      () => {},
+    );
+
     // Generate token
     const token = generateToken(user);
 

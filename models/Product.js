@@ -218,6 +218,31 @@ const productSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    /* Printed MRP on a bought-in packet. Selling above it is illegal in
+     * India, so the ERP warns when sellPrice > mrp. 0 = not applicable
+     * (in-house cakes have no printed MRP). */
+    mrp: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    // "100g", "6 pcs", "250ml" — what one unit of a resale item contains.
+    packSize: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    // ERP supplier this resale item is normally bought from.
+    defaultSupplierId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    brand: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     gstRate: {
       type: Number,
       default: 5,
@@ -294,22 +319,26 @@ productSchema.index({
 });
 productSchema.index({ category: 1, isAvailable: 1, displayOrder: 1 });
 productSchema.index({ "visibility.showOnWebsite": 1, "visibility.isActive": 1 });
+/* Partial unique indexes so products WITHOUT a barcode/sku don't all collide
+ * on one another.
+ *
+ * NOTE: MongoDB rejects $ne inside partialFilterExpression ("Expression not
+ * supported in partial index"). An earlier version used $ne: "" and the index
+ * silently failed to build at every startup. The rule is therefore: an absent
+ * barcode/sku must be UNSET, never an empty string — see clearEmptyIdentifiers
+ * in services/erpStateService.js, which normalises "" to $unset on write. */
 productSchema.index(
   { barcode: 1 },
   {
     unique: true,
-    partialFilterExpression: {
-      barcode: { $exists: true, $type: "string", $ne: "" },
-    },
+    partialFilterExpression: { barcode: { $exists: true, $type: "string" } },
   },
 );
 productSchema.index(
   { sku: 1 },
   {
     unique: true,
-    partialFilterExpression: {
-      sku: { $exists: true, $type: "string", $ne: "" },
-    },
+    partialFilterExpression: { sku: { $exists: true, $type: "string" } },
   },
 );
 

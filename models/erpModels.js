@@ -17,6 +17,7 @@ const recordCollections = {
   Recipe: "erp_recipes",
   Production: "erp_productions",
   Bill: "erp_sales",
+  SaleReturn: "erp_returns",
   HeldBill: "erp_held_bills",
   CakeOrder: "erp_cake_orders",
   Supplier: "erp_suppliers",
@@ -36,6 +37,7 @@ const stateFieldToModel = {
   recipes: "Recipe",
   productions: "Production",
   sales: "Bill",
+  saleReturns: "SaleReturn",
   heldBills: "HeldBill",
   cakeOrders: "CakeOrder",
   suppliers: "Supplier",
@@ -125,10 +127,38 @@ const erpMetaSchema = new mongoose.Schema(
 const ErpMeta =
   mongoose.models.ErpMeta || mongoose.model("ErpMeta", erpMetaSchema);
 
+/* ── AuditLog ─────────────────────────────────────────────────────────────
+ * Who changed what, and when. Append-only: nothing in the app deletes from
+ * here, which is the whole point of an audit trail. `before`/`after` are Mixed
+ * because every entity has a different shape. */
+
+const auditLogSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    at: { type: String, default: () => new Date().toISOString() },
+    actorId: { type: String, default: "" },
+    actorName: { type: String, default: "" },
+    action: { type: String, required: true },
+    entity: { type: String, default: "" },
+    entityId: { type: String, default: "" },
+    summary: { type: String, default: "" },
+    before: { type: mongoose.Schema.Types.Mixed },
+    after: { type: mongoose.Schema.Types.Mixed },
+  },
+  { collection: "erp_audit_log", minimize: false, versionKey: false },
+);
+
+auditLogSchema.index({ id: 1 }, { unique: true });
+auditLogSchema.index({ at: -1 });
+
+const AuditLog =
+  mongoose.models.AuditLog || mongoose.model("AuditLog", auditLogSchema);
+
 module.exports = {
   ...models,
   Category,
   ErpMeta,
+  AuditLog,
   stateFieldToModel,
   recordCollections,
 };

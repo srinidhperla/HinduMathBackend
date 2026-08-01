@@ -1,4 +1,5 @@
 const Product = require("../models/Product");
+const SiteContent = require("../models/SiteContent");
 const erpModels = require("../models/erpModels");
 const logger = require("../utils/logger");
 
@@ -32,6 +33,7 @@ const DEFAULT_SETTINGS = {
 
 const DEFAULT_COUNTERS = () => ({
   sale: { year: currentYear(), count: 0 },
+  saleReturn: { year: currentYear(), count: 0 },
   order: { year: currentYear(), count: 0 },
   purchase: { year: currentYear(), count: 0 },
   production: { year: currentYear(), count: 0 },
@@ -143,6 +145,31 @@ const toErpProduct = (product, categoryIdBySlug) => {
     sourceType: product.productType || "inhouse",
     emoji: product.erpEmoji || "",
     imageUrl: product.image || "",
+
+    /* ── Variants ──
+     * The website already prices cakes per weight AND per egg type:
+     *   weightOptions  [{ label: "500g", multiplier: 0.5 }, …]
+     *   variantPrices  { "egg::Cake": { "500g": 370, "1kg": 650 }, … }
+     * The counter needs exactly the same options and prices, otherwise a
+     * customer is quoted one price online and another in the shop. These are
+     * projected read-only — the website admin owns them. */
+    weightOptions: (product.weightOptions || [])
+      .filter((option) => option.isAvailable !== false)
+      .map((option) => ({
+        label: option.label,
+        multiplier: Number(option.multiplier || 1),
+      })),
+    flavorOptions: (product.flavorOptions || [])
+      .filter((option) => option.isAvailable !== false)
+      .map((option) => option.name)
+      .concat(Array.isArray(product.flavors) ? product.flavors : [])
+      .filter((value, index, list) => value && list.indexOf(value) === index),
+    hasEgg: product.isEgg !== false,
+    hasEggless: product.isEggless === true,
+    variantPrices:
+      product.variantPrices instanceof Map
+        ? Object.fromEntries(product.variantPrices)
+        : product.variantPrices || {},
     quickSelect: Boolean(product.erpQuickSelect),
     trackStock: Boolean(product.trackStock),
     reorderLevel: Number(product.reorderLevel || 0),
@@ -150,6 +177,24 @@ const toErpProduct = (product, categoryIdBySlug) => {
     sku: product.sku || "",
     barcode: product.barcode || "",
     barcodeType: product.barcodeType || "CODE128",
+
+    /* Resale fields — these exist ONLY in the ERP; the website admin has no
+     * form for them. */
+    mrp: Number(product.mrp || 0),
+    packSize: product.packSize || "",
+    brand: product.brand || "",
+    defaultSupplierId: product.defaultSupplierId || "",
+
+    /* Website-facing fields. The ERP now edits these too (the owner asked for
+     * one form), so they must round-trip. The website admin still edits the
+     * same document — last write wins, as with any shared record. */
+    description: product.description || "",
+    images: Array.isArray(product.images) ? product.images : [],
+    isFeatured: Boolean(product.isFeatured),
+    isAvailable: product.isAvailable !== false,
+    occasion: product.occasion || "",
+    displayOrder: Number(product.displayOrder || 0),
+    isAddon: Boolean(product.isAddon),
 
     // Channel flags, editable from the ERP Products page.
     showOnWebsite: visibility.showOnWebsite !== false,
@@ -271,6 +316,25 @@ const readState = async () => {
 
   const records = Object.fromEntries(recordEntries);
 
+  /* Coupons are READ-ONLY here. The website admin (CouponManager) owns the
+   * list; the counter simply redeems from the same one, so an offer never
+   * exists online but not in the shop. writeState ignores state.coupons —
+   * `coupons` is deliberately absent from stateFieldToModel. */
+  const site = await SiteContent.findOne({}).select("coupons").lean();
+  const coupons = (site?.coupons || [])
+    .filter((coupon) => coupon.isActive !== false)
+    // A free-delivery offer means nothing at a walk-in counter.
+    .filter((coupon) => coupon.type !== "delivery")
+    .map((coupon) => ({
+      id: String(coupon._id),
+      code: coupon.code,
+      type: coupon.type,
+      value: Number(coupon.value || 0),
+      minSubtotal: Number(coupon.minSubtotal || 0),
+      maxDiscount: coupon.maxDiscount === null ? null : Number(coupon.maxDiscount),
+      description: coupon.description || "",
+    }));
+
   // On-hand stock is the sum of the remaining quantity across live batches.
   const remainingByProduct = new Map();
   (records.productBatches || []).forEach((batch) => {
@@ -294,6 +358,7 @@ const readState = async () => {
       );
       return erpProduct;
     }),
+    coupons,
     ...records,
   };
 
@@ -388,14 +453,45 @@ const syncCategories = async (incoming) => {
     });
   });
 
+  // A category deleted in the ERP must actually go. The client already blocks
+  // deleting a category that still has products, so anything missing here is
+  // an intentional removal — but never drop a slug a product still points at.
+  const incomingIds = new Set(
+    (Array.isArray(incoming) ? incoming : [])
+      .map((entry) => entry?.id)
+      .filter(Boolean),
+  );
+  const removed = stored.filter((entry) => !incomingIds.has(entry.id));
+
+  if (removed.length) {
+    const slugsInUse = new Set(
+      (await Product.distinct("category")).map((value) =>
+        String(value || "").trim().toLowerCase(),
+      ),
+    );
+    const deletableIds = removed
+      .filter((entry) => !slugsInUse.has(entry.slug))
+      .map((entry) => entry.id);
+
+    if (deletableIds.length) {
+      operations.push({ deleteMany: { filter: { id: { $in: deletableIds } } } });
+    }
+  }
+
   if (operations.length) {
     await Category.bulkWrite(operations, { ordered: false });
   }
 };
 
-/* Writes ERP-owned product fields back to the shared catalog. Website-only
- * fields (description, images, flavors, weightOptions, addOns, isFeatured,
- * displayOrder) are never touched here — the website admin owns those. */
+/* Writes product fields back to the shared catalog.
+ *
+ * 2026-07-30: the owner asked for ONE product form, in the ERP, covering the
+ * website fields too — so description/images/variants/featured are now
+ * written from here as well. They are only written when the incoming record
+ * actually carries the key, so a partial update (e.g. the Website Management
+ * page sending only visibility flags) can never blank a description.
+ *
+ * The website admin is unchanged and still edits the same document. */
 const syncProducts = async (incoming, categories) => {
   const slugByCategoryId = new Map(
     (categories || []).map((category) => [category.id, category.slug]),
@@ -439,17 +535,70 @@ const syncProducts = async (incoming, categories) => {
       "visibility.isActive": product.isActive !== false,
     };
 
-    if (product.sku) erpFields.sku = product.sku;
-    if (product.barcode) erpFields.barcode = product.barcode;
     if (product.barcodeType) erpFields.barcodeType = product.barcodeType;
+
+    /* Resale + website fields, written only when the incoming record actually
+     * carries the key. `in` rather than truthiness, so clearing a field to ""
+     * or 0 still saves, while an object that never had the key is left alone. */
+    const passThrough = {
+      mrp: (value) => Number(value || 0),
+      packSize: (value) => String(value || "").trim(),
+      brand: (value) => String(value || "").trim(),
+      defaultSupplierId: (value) => String(value || "").trim(),
+      description: (value) => String(value || "").trim(),
+      occasion: (value) => String(value || "").trim(),
+      isFeatured: Boolean,
+      isAvailable: (value) => value !== false,
+      isAddon: Boolean,
+      displayOrder: (value) => Number(value || 0),
+      weightOptions: (value) => (Array.isArray(value) ? value : []),
+      variantPrices: (value) => (value && typeof value === "object" ? value : {}),
+    };
+
+    Object.entries(passThrough).forEach(([key, cast]) => {
+      if (key in product) erpFields[key] = cast(product[key]);
+    });
+
+    // Egg/eggless is exposed to the ERP as hasEgg/hasEggless.
+    if ("hasEgg" in product) erpFields.isEgg = product.hasEgg !== false;
+    if ("hasEggless" in product) erpFields.isEggless = Boolean(product.hasEggless);
+
+    // Flavours are stored as a plain string array on the website document.
+    if ("flavorOptions" in product) {
+      erpFields.flavors = (product.flavorOptions || []).filter(Boolean);
+    }
+
+    /* Images: `image` is the main one the storefront shows, `images[]` the
+     * gallery. Keep them consistent so neither app sees a product with a
+     * gallery but no main photo. */
+    if ("images" in product || "imageUrl" in product) {
+      const gallery = (Array.isArray(product.images) ? product.images : []).filter(Boolean);
+      const main = product.imageUrl || gallery[0] || "";
+      if (main) {
+        erpFields.image = main;
+        erpFields.images = gallery.length ? gallery : [main];
+      }
+    }
+
+    /* barcode/sku carry a partial UNIQUE index that matches on $type:"string".
+     * An empty string is still a string, so several blank products would all
+     * collide. Blank must therefore be $unset, never "". */
+    const unsetFields = {};
+    if (product.sku) erpFields.sku = product.sku;
+    else unsetFields.sku = "";
+    if (product.barcode) erpFields.barcode = product.barcode;
+    else unsetFields.barcode = "";
 
     const existing = storedById.get(product.id);
 
     if (existing) {
+      const update = { $set: erpFields };
+      if (Object.keys(unsetFields).length) update.$unset = unsetFields;
+
       operations.push({
         updateOne: {
           filter: { _id: existing._id },
-          update: { $set: erpFields },
+          update,
         },
       });
       return;

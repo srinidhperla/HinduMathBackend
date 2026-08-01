@@ -994,6 +994,22 @@ const validateAndPriceOrder = async ({
       throw new Error(`Product ${product.name} is not available`);
     }
 
+    /* Channel enforcement (ERP visibility flags).
+     * This is the security boundary for online ordering — the storefront also
+     * hides these products, but a crafted request must never be able to order
+     * a shop-only item (a chocolate bar, a candle) or an archived product.
+     * Every order path (cash, Razorpay create, Razorpay verify) runs through
+     * validateAndPriceOrder, so one check here covers all of them. */
+    const visibility = product.visibility || {};
+    if (visibility.isActive === false) {
+      throw new Error(`Product ${product.name} is no longer available`);
+    }
+    if (visibility.allowOnlineOrder === false) {
+      throw new Error(
+        `${product.name} is available in the shop only and cannot be ordered online`,
+      );
+    }
+
     const flavorOptions = getFlavorOptions(product);
     const weightOptions = getWeightOptions(product);
     const hasEgg = product.isEgg !== false;
