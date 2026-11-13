@@ -8,14 +8,20 @@ const {
   emitSiteDataUpdated,
   emitAdminDataUpdated,
 } = require("../services/orderEvents");
+const BillingCategory = require("../models/BillingCategory");
 const {
   PAYMENT_MODES,
+  UNCATEGORISED,
   round2,
   dateKeyOf,
   isDateKey,
   isTime,
   istDate,
   shiftDateKey,
+  toCategory,
+  loadCategories,
+  isValueCategory,
+  valueCandidates,
   loadCatalog,
   toCatalogItem,
   resolveLines,
@@ -24,7 +30,7 @@ const {
   summarisePaymentMode,
 } = require("../services/billingService");
 const {
-  generateBills,
+  generatePlan,
   MAX_BILL_AMOUNT,
   MAX_BILLS,
 } = require("../services/autoBillingService");
@@ -165,9 +171,25 @@ const toBill = (bill) => ({
 
 const getCatalog = async (req, res) => {
   try {
-    const [catalog, shop] = await Promise.all([loadCatalog(), readShop()]);
-    const categories = [...new Set(catalog.map((item) => item.category))].sort();
-    return res.json({ items: catalog, categories, shop });
+    const categories = await ensureDefaultCategories();
+    const [catalog, shop] = await Promise.all([
+      loadCatalog(categories),
+      readShop(),
+    ]);
+    return res.json({
+      items: catalog,
+      // Website menu categories, kept for the Items screen.
+      categories: [...new Set(catalog.map((item) => item.category))].sort(),
+      billingCategories: categories.map((category) => ({
+        ...category,
+        // Set when the category has no items and is billed as one line.
+        isValueCategory: isValueCategory(category),
+        allowedValues: isValueCategory(category)
+          ? valueCandidates(category)
+          : [],
+      })),
+      shop,
+    });
   } catch (error) {
     return fail(res, error, "Error loading billing items");
   }
@@ -289,8 +311,12 @@ const parsePayments = (input, grandTotal) => {
 const createBill = async (req, res) => {
   try {
     const body = req.body || {};
-    const catalog = await loadCatalog();
-    const totals = computeBill(resolveLines(body.items, catalog), body.discount);
+    const categories = await loadCategories();
+    const catalog = await loadCatalog(categories);
+    const totals = computeBill(
+      resolveLines(body.items, catalog, categories),
+      body.discount,
+    );
 
     if (totals.grandTotal <= 0) throw badRequest("Bill total must be above ₹0.");
 
@@ -491,13 +517,238 @@ const getDashboard = async (req, res) => {
   }
 };
 
+/* ── Billing categories ─────────────────────────────────────────────────── */
+
+// The shop's standard list, used once to fill an empty Categories & Tax page.
+const DEFAULT_CATEGORIES = [
+  ["Bread", "1905", 0],
+  ["Biscuit / Cookie", "1905", 5],
+  ["Rusk", "1905", 5],
+  ["Puffs", "1905", 5],
+  ["Confectionery", "1704", 5],
+  ["Namkeen / Chips", "2106", 5],
+  ["Ice Cream", "2105", 5],
+  ["Cakes / Pastries", "1905", 5],
+  ["Chocolates", "1806", 5],
+  ["Decoration Items", "9503", 18],
+  ["Cheese", "0406", 12],
+  ["Butter", "0405", 12],
+  ["Green Peas / Sweet Corn", "0710", 0],
+  ["Fruit Drinks", "2202", 5],
+  ["Drinking Water", "2201", 5],
+  ["Aerated / Soft Drinks", "2202", 40],
+];
+
+async function ensureDefaultCategories() {
+  const existing = await BillingCategory.estimatedDocumentCount();
+  if (existing === 0) {
+    await BillingCategory.insertMany(
+      DEFAULT_CATEGORIES.map(([name, hsnCode, gstRate], index) => ({
+        name,
+        hsnCode,
+        gstRate,
+        sortOrder: index + 1,
+      })),
+      { ordered: false },
+    ).catch((error) => {
+      // Another request seeded at the same moment; harmless.
+      logger.warn("Billing category seed skipped", { error: error.message });
+    });
+  }
+  return loadCategories();
+}
+
+const parseCategoryBody = (body, { partial = false } = {}) => {
+  const update = {};
+
+  if (!partial || body.name !== undefined) {
+    const name = String(body.name || "").trim();
+    if (!name) throw badRequest("Category name is required.");
+    update.name = name.slice(0, 80);
+  }
+
+  if (body.hsnCode !== undefined) {
+    const hsnCode = String(body.hsnCode || "").trim();
+    if (hsnCode && !/^\d{2,8}$/.test(hsnCode)) {
+      throw badRequest("HSN code must be 2 to 8 digits.");
+    }
+    update.hsnCode = hsnCode;
+  }
+
+  if (body.gstRate !== undefined) {
+    const gstRate = Number(body.gstRate);
+    if (!(gstRate >= 0) || gstRate > 100) {
+      throw badRequest("GST % must be between 0 and 100.");
+    }
+    update.gstRate = gstRate;
+  }
+
+  if (body.sortOrder !== undefined) {
+    update.sortOrder = Number(body.sortOrder) || 0;
+  }
+
+  if (body.productIds !== undefined) {
+    update.productIds = [
+      ...new Set(
+        (Array.isArray(body.productIds) ? body.productIds : [])
+          .map(String)
+          .filter((id) => mongoose.isValidObjectId(id)),
+      ),
+    ];
+  }
+
+  if (body.valueMode !== undefined) {
+    const valueMode = String(body.valueMode);
+    if (!["none", "fixed", "range"].includes(valueMode)) {
+      throw badRequest("Unknown pricing choice for the category.");
+    }
+    update.valueMode = valueMode;
+
+    if (valueMode === "fixed") {
+      const values = [
+        ...new Set(
+          (Array.isArray(body.fixedValues) ? body.fixedValues : []).map(Number),
+        ),
+      ].sort((left, right) => left - right);
+      if (!values.length) {
+        throw badRequest("Enter at least one fixed amount.");
+      }
+      if (values.some((value) => !Number.isInteger(value) || value <= 0)) {
+        throw badRequest("Fixed amounts must be whole rupees above 0.");
+      }
+      update.fixedValues = values;
+    }
+
+    if (valueMode === "range") {
+      const rangeMin = Number(body.rangeMin);
+      const rangeMax = Number(body.rangeMax);
+      const roundTo = Number(body.roundTo || 1);
+      if (!Number.isInteger(rangeMin) || !Number.isInteger(rangeMax)) {
+        throw badRequest("Range amounts must be whole rupees.");
+      }
+      if (rangeMin <= 0 || rangeMax < rangeMin) {
+        throw badRequest("The range needs a lowest amount above 0 and a highest amount at or above it.");
+      }
+      if (!Number.isInteger(roundTo) || roundTo < 1) {
+        throw badRequest("Round-off must be a whole number such as 1, 5 or 10.");
+      }
+      const endDigits = [
+        ...new Set(
+          (Array.isArray(body.endDigits) ? body.endDigits : []).map(Number),
+        ),
+      ].sort((left, right) => left - right);
+      if (endDigits.some((digit) => !Number.isInteger(digit) || digit < 0 || digit > 9)) {
+        throw badRequest("Last digits must be between 0 and 9.");
+      }
+      const candidate = { valueMode: "range", rangeMin, rangeMax, roundTo, endDigits };
+      if (!valueCandidates(candidate).length) {
+        throw badRequest(
+          endDigits.length
+            ? `No amount between ₹${rangeMin} and ₹${rangeMax} ends in ${endDigits.join(" or ")}.`
+            : `No multiple of ${roundTo} lies between ₹${rangeMin} and ₹${rangeMax}.`,
+        );
+      }
+      update.rangeMin = rangeMin;
+      update.rangeMax = rangeMax;
+      update.roundTo = roundTo;
+      update.endDigits = endDigits;
+    }
+  }
+
+  return update;
+};
+
+const duplicateName = (error) =>
+  error?.code === 11000
+    ? badRequest("A category with that name already exists.")
+    : error;
+
+/* An item belongs to one billing category: placing it here takes it out of
+ * wherever it was. */
+const releaseFromOtherCategories = (categoryId, productIds) =>
+  productIds?.length
+    ? BillingCategory.updateMany(
+        { _id: { $ne: categoryId } },
+        { $pull: { productIds: { $in: productIds } } },
+      )
+    : Promise.resolve();
+
+const listCategories = async (req, res) => {
+  try {
+    return res.json({ categories: await ensureDefaultCategories() });
+  } catch (error) {
+    return fail(res, error, "Error loading categories");
+  }
+};
+
+const createCategory = async (req, res) => {
+  try {
+    const data = parseCategoryBody(req.body || {});
+    const last = await BillingCategory.findOne({}).sort({ sortOrder: -1 }).lean();
+    const category = await BillingCategory.create({
+      ...data,
+      sortOrder: data.sortOrder || Number(last?.sortOrder || 0) + 1,
+    }).catch((error) => {
+      throw duplicateName(error);
+    });
+    await releaseFromOtherCategories(category._id, data.productIds);
+    return res.status(201).json({ category: toCategory(category.toObject()) });
+  } catch (error) {
+    return fail(res, error, "Error adding category");
+  }
+};
+
+const updateCategory = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      throw badRequest("Unknown category.");
+    }
+    const data = parseCategoryBody(req.body || {}, { partial: true });
+    const category = await BillingCategory.findByIdAndUpdate(
+      req.params.id,
+      { $set: data },
+      { new: true, runValidators: true },
+    )
+      .lean()
+      .catch((error) => {
+        throw duplicateName(error);
+      });
+    if (!category) {
+      return res.status(404).json({ message: "Category not found." });
+    }
+    await releaseFromOtherCategories(category._id, data.productIds);
+    return res.json({ category: toCategory(category) });
+  } catch (error) {
+    return fail(res, error, "Error updating category");
+  }
+};
+
+/* Deleting a category leaves its items uncategorised. Bills already saved
+ * keep the category name, HSN code and GST they were billed with. */
+const deleteCategory = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      throw badRequest("Unknown category.");
+    }
+    const category = await BillingCategory.findByIdAndDelete(req.params.id).lean();
+    if (!category) {
+      return res.status(404).json({ message: "Category not found." });
+    }
+    return res.json({ deleted: true, name: category.name });
+  } catch (error) {
+    return fail(res, error, "Error deleting category");
+  }
+};
+
 /* ── Reports ────────────────────────────────────────────────────────────── */
 
 const getReport = async (req, res) => {
   try {
     const today = dateKeyOf();
     const toKey = isDateKey(req.query.to) ? req.query.to : today;
-    const fromKey = isDateKey(req.query.from) ? req.query.from : `${toKey.slice(0, 7)}-01`;
+    const fromKey = isDateKey(req.query.from)
+      ? req.query.from
+      : `${toKey.slice(0, 7)}-01`;
     if (fromKey > toKey) throw badRequest("The start date is after the end date.");
 
     const [bills, cancelled] = await Promise.all([
@@ -536,24 +787,92 @@ const getReport = async (req, res) => {
         };
       });
 
-    const gstMap = new Map();
+    /* Every line is counted at what the customer actually paid for it (after
+     * any bill discount), and split between cash and UPI in the proportion
+     * the bill itself was paid — so the category and item totals add up to
+     * the sales figure. */
     const categoryMap = new Map();
+    const itemMap = new Map();
+    const gstMap = new Map();
+
+    const addTo = (entry, qty, amount, cash, upi) => {
+      entry.qty += qty;
+      entry.amount += amount;
+      entry.cash += cash;
+      entry.upi += upi;
+    };
+
     bills.forEach((bill) => {
+      const paidBy = (mode) =>
+        (bill.payments || [])
+          .filter((payment) => payment.mode === mode)
+          .reduce((sum, payment) => sum + payment.amount, 0);
+      const cashShare = bill.grandTotal > 0 ? paidBy("cash") / bill.grandTotal : 0;
+      const upiShare = bill.grandTotal > 0 ? paidBy("phonepe") / bill.grandTotal : 0;
+      const factor = bill.subTotal > 0 ? bill.grandTotal / bill.subTotal : 0;
+
       (bill.items || []).forEach((line) => {
-        const rate = Number(line.gstRate || 0);
-        const gst = gstMap.get(rate) || { rate, taxable: 0, cgst: 0, sgst: 0 };
+        const amount = line.lineTotal * factor;
+        const cash = amount * cashShare;
+        const upi = amount * upiShare;
+        const categoryName = line.category || UNCATEGORISED;
+
+        const category = categoryMap.get(categoryName) || {
+          category: categoryName,
+          hsnCode: line.hsnCode || "",
+          gstRate: Number(line.gstRate || 0),
+          qty: 0,
+          amount: 0,
+          cash: 0,
+          upi: 0,
+          items: new Map(),
+        };
+        addTo(category, line.qty, amount, cash, upi);
+        categoryMap.set(categoryName, category);
+
+        const itemKey = `${line.productId || line.name}|${line.variant || ""}`;
+        const newItem = () => ({
+          name: line.name,
+          variant: line.variant || "",
+          category: categoryName,
+          qty: 0,
+          amount: 0,
+          cash: 0,
+          upi: 0,
+        });
+
+        const inCategory = category.items.get(itemKey) || newItem();
+        addTo(inCategory, line.qty, amount, cash, upi);
+        category.items.set(itemKey, inCategory);
+
+        const flatKey = `${categoryName}|${itemKey}`;
+        const flat = itemMap.get(flatKey) || newItem();
+        addTo(flat, line.qty, amount, cash, upi);
+        itemMap.set(flatKey, flat);
+
+        const gstKey = `${line.hsnCode || ""}|${Number(line.gstRate || 0)}`;
+        const gst = gstMap.get(gstKey) || {
+          hsnCode: line.hsnCode || "",
+          rate: Number(line.gstRate || 0),
+          taxable: 0,
+          cgst: 0,
+          sgst: 0,
+        };
         gst.taxable += line.taxableValue || 0;
         gst.cgst += line.cgst || 0;
         gst.sgst += line.sgst || 0;
-        gstMap.set(rate, gst);
-
-        const key = line.category || "other";
-        const category = categoryMap.get(key) || { category: key, qty: 0, amount: 0 };
-        category.qty += line.qty;
-        category.amount += line.lineTotal;
-        categoryMap.set(key, category);
+        gstMap.set(gstKey, gst);
       });
     });
+
+    const tidy = (entry) => ({
+      ...entry,
+      qty: round2(entry.qty),
+      amount: round2(entry.amount),
+      cash: round2(entry.cash),
+      upi: round2(entry.upi),
+    });
+    const byAmount = (left, right) => right.amount - left.amount;
 
     return res.json({
       from: fromKey,
@@ -564,19 +883,26 @@ const getReport = async (req, res) => {
         amount: round2(cancelled.reduce((sum, bill) => sum + bill.grandTotal, 0)),
       },
       byDay,
-      items: rankItems(bills),
       categories: [...categoryMap.values()]
-        .map((entry) => ({ ...entry, qty: round2(entry.qty), amount: round2(entry.amount) }))
-        .sort((left, right) => right.amount - left.amount),
+        .map((category) => ({
+          ...tidy(category),
+          items: [...category.items.values()].map(tidy).sort(byAmount),
+        }))
+        .sort(byAmount),
+      items: [...itemMap.values()].map(tidy).sort(byAmount),
       gst: [...gstMap.values()]
         .map((entry) => ({
+          hsnCode: entry.hsnCode,
           rate: entry.rate,
           taxable: round2(entry.taxable),
           cgst: round2(entry.cgst),
           sgst: round2(entry.sgst),
           total: round2(entry.taxable + entry.cgst + entry.sgst),
         }))
-        .sort((left, right) => left.rate - right.rate),
+        .sort(
+          (left, right) =>
+            left.rate - right.rate || left.hsnCode.localeCompare(right.hsnCode),
+        ),
     });
   } catch (error) {
     return fail(res, error, "Error loading report");
@@ -589,7 +915,9 @@ const parseAmount = (value, label) => {
   const amount = round2(value);
   if (!(amount > 0)) throw badRequest(`${label} must be above ₹0.`);
   if (amount > MAX_BILL_AMOUNT) {
-    throw badRequest(`${label} of ₹${amount} is above the ₹${MAX_BILL_AMOUNT} per-bill limit.`);
+    throw badRequest(
+      `${label} of ₹${amount} is above the ₹${MAX_BILL_AMOUNT} per-bill limit.`,
+    );
   }
   return amount;
 };
@@ -597,41 +925,75 @@ const parseAmount = (value, label) => {
 const parseAutoRequest = (body) => {
   const date = isDateKey(body.date) ? body.date : null;
   if (!date) throw badRequest("Pick the date these takings are for.");
-  if (date > dateKeyOf()) throw badRequest("Auto billing cannot be run for a future date.");
-
-  const phonepe = (Array.isArray(body.phonepe) ? body.phonepe : []).map((entry, index) => ({
-    amount: parseAmount(entry?.amount, `PhonePe transaction ${index + 1}`),
-    time: isTime(entry?.time) ? entry.time : "",
-    reference: String(entry?.reference || "").trim().slice(0, 80),
-  }));
-
-  const cashTotal = body.cashTotal ? round2(body.cashTotal) : 0;
-  if (cashTotal < 0 || !Number.isInteger(cashTotal)) {
-    throw badRequest("Cash total must be a whole number of rupees.");
+  if (date > dateKeyOf()) {
+    throw badRequest("Auto billing cannot be run for a future date.");
   }
-  if (cashTotal > 1000000) throw badRequest("Cash total is too large for one run.");
 
+  const phonepe = (Array.isArray(body.phonepe) ? body.phonepe : []).map(
+    (entry, index) => ({
+      amount: parseAmount(entry?.amount, `PhonePe transaction ${index + 1}`),
+      time: isTime(entry?.time) ? entry.time : "",
+      reference: String(entry?.reference || "").trim().slice(0, 80),
+    }),
+  );
+  const upiTotal = round2(phonepe.reduce((sum, entry) => sum + entry.amount, 0));
+
+  // The cash can be typed directly, or worked out from the day's total.
+  const amount = round2(body.amount);
+  if (!(amount >= 0)) throw badRequest("Enter the cash amount or the day's total.");
+  const cashTotal =
+    body.amountMode === "total" ? round2(amount - upiTotal) : amount;
+  if (cashTotal < 0) {
+    throw badRequest(
+      `The day's total of ₹${amount} is less than the PhonePe total of ₹${upiTotal}.`,
+    );
+  }
+  if (!Number.isInteger(cashTotal)) {
+    throw badRequest(
+      `The cash works out to ₹${cashTotal}; it must be a whole number of rupees.`,
+    );
+  }
+  if (cashTotal > 1000000) throw badRequest("The cash amount is too large for one run.");
   if (!phonepe.length && !cashTotal) {
-    throw badRequest("Enter at least one PhonePe transaction or a cash total.");
+    throw badRequest("Add PhonePe transactions or a cash amount.");
   }
+
+  const totalBills = Number(body.totalBills);
+  if (!Number.isInteger(totalBills) || totalBills < 1) {
+    throw badRequest("Enter how many bills the day should have.");
+  }
+
+  const seen = new Set();
+  const categoryTargets = (
+    Array.isArray(body.categoryTargets) ? body.categoryTargets : []
+  )
+    .filter((target) => Number(target?.amount) > 0)
+    .map((target) => {
+      const categoryId = String(target.categoryId || "");
+      const targetAmount = Number(target.amount);
+      if (!Number.isInteger(targetAmount)) {
+        throw badRequest("Category amounts must be whole rupees.");
+      }
+      if (seen.has(categoryId)) {
+        throw badRequest("A category has been given an amount twice.");
+      }
+      seen.add(categoryId);
+      return { categoryId, amount: targetAmount };
+    });
 
   const input = body.options || {};
   const options = {
-    categories: Array.isArray(input.categories) ? input.categories.map(String) : [],
-    excludeIds: Array.isArray(input.excludeIds) ? input.excludeIds.map(String) : [],
     startTime: isTime(input.startTime) ? input.startTime : "09:00",
     endTime: isTime(input.endTime) ? input.endTime : "22:00",
-    minBill: Number(input.minBill) || undefined,
-    maxBill: Number(input.maxBill) || undefined,
-    avgBill: Number(input.avgBill) || undefined,
-    count: Number(input.cashBillCount) || undefined,
     maxQtyPerItem: Number(input.maxQtyPerItem) || undefined,
+    // Category whose open line covers amounts the prices cannot make.
+    gapCategoryId: String(input.gapCategoryId || ""),
   };
   if (options.endTime <= options.startTime) {
     throw badRequest("Shop closing time must be after opening time.");
   }
 
-  return { date, phonepe, cashTotal, options };
+  return { date, phonepe, cashTotal, totalBills, categoryTargets, options };
 };
 
 const existingForDate = async (dateKey) => {
@@ -644,14 +1006,15 @@ const existingForDate = async (dateKey) => {
 const previewAutoBills = async (req, res) => {
   try {
     const request = parseAutoRequest(req.body || {});
+    const categories = await loadCategories();
     const [catalog, existing] = await Promise.all([
-      loadCatalog(),
+      loadCatalog(categories),
       existingForDate(request.date),
     ]);
 
-    const bills = generateBills({ catalog, ...request });
+    const plan = generatePlan({ catalog, categories, ...request });
 
-    return res.json({ date: request.date, bills, existing });
+    return res.json({ date: request.date, ...plan, existing });
   } catch (error) {
     return fail(res, error, "Error generating bills");
   }
@@ -662,7 +1025,9 @@ const commitAutoBills = async (req, res) => {
     const body = req.body || {};
     const date = isDateKey(body.date) ? body.date : null;
     if (!date) throw badRequest("Pick the date these bills are for.");
-    if (date > dateKeyOf()) throw badRequest("Bills cannot be saved for a future date.");
+    if (date > dateKeyOf()) {
+      throw badRequest("Bills cannot be saved for a future date.");
+    }
 
     const drafts = Array.isArray(body.bills) ? body.bills : [];
     if (!drafts.length) throw badRequest("There are no bills to save.");
@@ -670,32 +1035,35 @@ const commitAutoBills = async (req, res) => {
       throw badRequest(`At most ${MAX_BILLS} bills can be saved in one run.`);
     }
 
-    const catalog = await loadCatalog();
+    const categories = await loadCategories();
+    const catalog = await loadCatalog(categories);
 
-    // Re-price every bill from the catalog; the client's numbers are not trusted.
+    // Re-price every bill from the catalog; the client's numbers are not
+    // trusted. The items must add up to the money received, to the rupee.
     const prepared = drafts.map((draft, index) => {
       const label = `Bill ${index + 1}`;
       const mode = String(draft?.mode || "").toLowerCase();
-      if (!["cash", "phonepe"].includes(mode)) throw badRequest(`${label}: unknown payment mode.`);
+      if (!["cash", "phonepe"].includes(mode)) {
+        throw badRequest(`${label}: unknown payment mode.`);
+      }
 
       const amount = parseAmount(draft?.amount, label);
-      const lines = resolveLines(draft?.lines, catalog);
-      const gross = round2(lines.reduce((sum, line) => sum + line.qty * line.unitPrice, 0));
-      const discount = round2(gross - amount);
+      const lines = resolveLines(draft?.lines, catalog, categories, {
+        strictValues: true,
+      });
+      const totals = computeBill(lines, 0);
 
-      if (discount < 0) {
-        throw badRequest(`${label}: items come to ₹${gross}, less than the ₹${amount} received.`);
-      }
-      if (discount > gross * 0.5) {
-        throw badRequest(`${label}: items come to ₹${gross}, far above the ₹${amount} received.`);
+      if (Math.abs(totals.grandTotal - amount) > 0.009) {
+        throw badRequest(
+          `${label}: the items come to ₹${totals.grandTotal} but ₹${amount} was received. Generate again to fix it.`,
+        );
       }
 
-      const time = isTime(draft?.time) ? draft.time : "12:00";
       return {
-        totals: computeBill(lines, discount),
+        totals,
         mode,
         amount,
-        time,
+        time: isTime(draft?.time) ? draft.time : "12:00",
         reference: String(draft?.reference || "").trim().slice(0, 80),
       };
     });
@@ -710,7 +1078,9 @@ const commitAutoBills = async (req, res) => {
       billNo: billNumbers[index],
       billDate: istDate(date, entry.time),
       dateKey: date,
-      payments: [{ mode: entry.mode, amount: entry.amount, reference: entry.reference }],
+      payments: [
+        { mode: entry.mode, amount: entry.amount, reference: entry.reference },
+      ],
       paymentMode: entry.mode,
       source: "auto",
       autoBatchId,
@@ -743,7 +1113,9 @@ const commitAutoBills = async (req, res) => {
 const cancelAutoBatch = async (req, res) => {
   try {
     const autoBatchId = String(req.params.batchId || "");
-    if (!autoBatchId.startsWith("auto-")) throw badRequest("Unknown auto-billing run.");
+    if (!autoBatchId.startsWith("auto-")) {
+      throw badRequest("Unknown auto-billing run.");
+    }
 
     const result = await BillingBill.updateMany(
       { autoBatchId, status: "active" },
@@ -774,7 +1146,9 @@ const listAutoBatches = async (req, res) => {
           createdAt: { $min: "$createdAt" },
           createdByName: { $first: "$createdByName" },
           bills: { $sum: 1 },
-          activeBills: { $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] } },
+          activeBills: {
+            $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+          },
           total: { $sum: "$grandTotal" },
         },
       },
@@ -802,6 +1176,10 @@ module.exports = {
   getCatalog,
   updateItem,
   createItem,
+  listCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
   createBill,
   listBills,
   getBill,

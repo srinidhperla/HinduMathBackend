@@ -22,6 +22,12 @@ router.get("/catalog", billing.getCatalog);
 router.post("/items", isBillingManager, billing.createItem);
 router.patch("/items/:id", isBillingManager, billing.updateItem);
 
+// Billing categories: name, HSN code, GST slab, items or amounts
+router.get("/categories", billing.listCategories);
+router.post("/categories", isBillingManager, billing.createCategory);
+router.patch("/categories/:id", isBillingManager, billing.updateCategory);
+router.delete("/categories/:id", isBillingManager, billing.deleteCategory);
+
 // Bills
 router.get("/bills", billing.listBills);
 router.post("/bills", billing.createBill);

@@ -1,17 +1,22 @@
 const Product = require("../models/Product");
 const Counter = require("../models/Counter");
+const BillingCategory = require("../models/BillingCategory");
 
 /* Shared helpers for the counter-billing module (/api/billing):
  *   - IST date handling (the shop's day, not the server's)
- *   - the billing catalog: products flattened into sellable variants
+ *   - billing categories (HSN code + GST slab) and the billing catalog
  *   - bill arithmetic (GST-inclusive prices, bill-level discount)
  *   - bill numbering
  */
 
 const IST_OFFSET = "+05:30";
 const PAYMENT_MODES = ["cash", "phonepe", "card", "other"];
+const UNCATEGORISED = "Uncategorised";
 
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+const fail = (message, statusCode = 400) =>
+  Object.assign(new Error(message), { statusCode });
 
 const dateKeyOf = (date = new Date()) =>
   new Intl.DateTimeFormat("en-CA", {
@@ -33,16 +38,106 @@ const shiftDateKey = (dateKey, days) => {
   return dateKeyOf(date);
 };
 
+/* ── Billing categories ─────────────────────────────────────────────────── */
+
+const toCategory = (category) => ({
+  id: String(category._id),
+  name: category.name,
+  hsnCode: category.hsnCode || "",
+  gstRate: Number(category.gstRate || 0),
+  sortOrder: Number(category.sortOrder || 0),
+  productIds: (category.productIds || []).map(String),
+  valueMode: category.valueMode || "none",
+  fixedValues: (category.fixedValues || []).map(Number),
+  rangeMin: Number(category.rangeMin || 0),
+  rangeMax: Number(category.rangeMax || 0),
+  roundTo: Math.max(1, Number(category.roundTo || 1)),
+  endDigits: [...new Set((category.endDigits || []).map(Number))]
+    .filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9)
+    .sort((left, right) => left - right),
+});
+
+/* Whether a whole-rupee amount fits a range category's rounding: its last
+ * digit is one of the chosen ones, or (older categories) it is a multiple of
+ * the round-off step. */
+const fitsRangeRounding = (category, value) => {
+  if (category.endDigits && category.endDigits.length) {
+    return (
+      Number.isInteger(value) && category.endDigits.includes(value % 10)
+    );
+  }
+  const step = Math.max(1, Math.round(category.roundTo || 1));
+  return step <= 1 || Math.abs(value / step - Math.round(value / step)) < 1e-6;
+};
+
+const loadCategories = async () => {
+  const categories = await BillingCategory.find({})
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+  return categories.map(toCategory);
+};
+
+/* A category with no items is billed as a single line named after it, priced
+ * from its fixed values or range. */
+const isValueCategory = (category) =>
+  category.productIds.length === 0 && category.valueMode !== "none";
+
+/* Every amount a value category may be billed at. Capped so a wide range
+ * with a small step cannot produce an enormous list. */
+const MAX_VALUE_CANDIDATES = 500;
+
+const valueCandidates = (category) => {
+  if (category.valueMode === "fixed") {
+    return [...new Set(category.fixedValues)]
+      .filter((value) => Number.isInteger(value) && value > 0)
+      .sort((left, right) => left - right);
+  }
+
+  if (category.valueMode === "range") {
+    const values = [];
+    for (
+      let value = Math.max(1, Math.ceil(category.rangeMin));
+      value <= category.rangeMax && values.length < MAX_VALUE_CANDIDATES;
+      value += 1
+    ) {
+      if (fitsRangeRounding(category, value)) values.push(value);
+    }
+    return values;
+  }
+
+  return [];
+};
+
+const isAllowedValue = (category, price) => {
+  if (category.valueMode === "fixed") {
+    return category.fixedValues.some((value) => Math.abs(value - price) < 0.005);
+  }
+  if (category.valueMode === "range") {
+    if (price < category.rangeMin - 0.005 || price > category.rangeMax + 0.005) {
+      return false;
+    }
+    const rupees = Math.round(price);
+    if (Math.abs(price - rupees) > 0.005) {
+      return !category.endDigits.length && Math.max(1, category.roundTo || 1) <= 1;
+    }
+    return fitsRangeRounding(category, rupees);
+  }
+  return false;
+};
+
 /* ── Catalog ──────────────────────────────────────────────────────────────
  * The website prices cakes per egg type and weight in `variantPrices`
  * ({ "egg::Cake": { "500g": 370 } }). The counter sells exactly those, so a
  * product becomes one catalog item with one variant per priced combination.
- * A product with no variant prices is a single variant at `price`. */
+ * A product with no variant prices is a single variant at `price`.
+ *
+ * An item placed in a billing category takes that category's HSN code and
+ * GST rate; its own older rate is only used while it is uncategorised. */
 
 const eggLabel = (typeKey) =>
   String(typeKey).toLowerCase().startsWith("eggless") ? "Eggless" : "Egg";
 
-const toCatalogItem = (product) => {
+const toCatalogItem = (product, categoryByProductId = new Map()) => {
   const visibility = product.visibility || {};
   const variantPrices =
     product.variantPrices instanceof Map
@@ -72,14 +167,22 @@ const toCatalogItem = (product) => {
     variants.push({ key: "", label: "", price: Number(product.price || 0) });
   }
 
+  const id = String(product._id);
+  const billingCategory = categoryByProductId.get(id) || null;
+
   return {
-    id: String(product._id),
+    id,
     name: product.name,
+    // Website menu category — shown for reference only.
     category: product.category || "",
+    billingCategoryId: billingCategory ? billingCategory.id : "",
+    billingCategory: billingCategory ? billingCategory.name : "",
     image: product.image || "",
     price: Number(product.price || 0),
-    gstRate: Number(product.gstRate ?? 5),
-    hsnCode: product.hsnCode || "",
+    gstRate: billingCategory
+      ? billingCategory.gstRate
+      : Number(product.gstRate ?? 5),
+    hsnCode: billingCategory ? billingCategory.hsnCode : product.hsnCode || "",
     isAddon: Boolean(product.isAddon),
     hasVariants,
     variants,
@@ -90,85 +193,151 @@ const toCatalogItem = (product) => {
   };
 };
 
-const loadCatalog = async () => {
-  const products = await Product.find({})
-    .sort({ category: 1, displayOrder: 1, name: 1 })
-    .lean();
-  return products.map(toCatalogItem);
+const indexCategoriesByProduct = (categories) => {
+  const byProductId = new Map();
+  categories.forEach((category) => {
+    category.productIds.forEach((productId) => {
+      byProductId.set(productId, category);
+    });
+  });
+  return byProductId;
 };
 
-/* Turns client lines ({ productId, variantKey, qty }) into priced bill lines.
- * Prices always come from the catalog — the client never sets them — except
- * for an open "custom" line (no productId), used for one-off cake orders. */
-const resolveLines = (inputLines, catalog) => {
-  const byId = new Map(catalog.map((item) => [item.id, item]));
+const loadCatalog = async (categories) => {
+  const [products, billingCategories] = await Promise.all([
+    Product.find({}).sort({ category: 1, displayOrder: 1, name: 1 }).lean(),
+    categories ? Promise.resolve(categories) : loadCategories(),
+  ]);
+  const byProductId = indexCategoriesByProduct(billingCategories);
+  return products.map((product) => toCatalogItem(product, byProductId));
+};
+
+/* Turns client lines into priced bill lines. Three kinds of line:
+ *   { productId, variantKey, qty }      an item — price comes from the catalog
+ *   { categoryId, unitPrice, qty }      a category line (category has no items)
+ *   { name, unitPrice, qty }            a one-off custom line
+ * `strictValues` makes a category line obey the category's fixed values or
+ * range; auto billing always uses it. */
+const resolveLines = (
+  inputLines,
+  catalog,
+  categories = [],
+  { strictValues = false } = {},
+) => {
+  const itemsById = new Map(catalog.map((item) => [item.id, item]));
+  const categoriesById = new Map(
+    categories.map((category) => [category.id, category]),
+  );
   const lines = [];
 
   (Array.isArray(inputLines) ? inputLines : []).forEach((input) => {
     const qty = Number(input?.qty);
     if (!(qty > 0) || qty > 9999) {
-      throw Object.assign(new Error("Each line needs a quantity above 0."), {
-        statusCode: 400,
-      });
+      throw fail("Each line needs a quantity above 0.");
     }
 
-    if (!input.productId) {
-      const name = String(input.name || "").trim();
-      const unitPrice = round2(input.unitPrice);
-      if (!name || !(unitPrice > 0)) {
-        throw Object.assign(
-          new Error("A custom item needs a name and a price."),
-          { statusCode: 400 },
+    if (input.productId) {
+      const item = itemsById.get(String(input.productId));
+      if (!item || !item.billable) {
+        throw fail(
+          `"${input.name || input.productId}" is not available for billing.`,
         );
       }
+
+      const variant =
+        item.variants.find(
+          (entry) => entry.key === String(input.variantKey || ""),
+        ) || (item.variants.length === 1 ? item.variants[0] : null);
+      if (!variant) {
+        throw fail(`Pick a size for "${item.name}".`);
+      }
+
       lines.push({
-        productId: "",
-        name: name.slice(0, 120),
-        variant: "",
-        category: "custom",
-        hsnCode: "1905",
+        productId: item.id,
+        categoryId: item.billingCategoryId,
+        name: item.name,
+        variant: variant.label,
+        category: item.billingCategory || UNCATEGORISED,
+        hsnCode: item.hsnCode,
         qty,
-        unitPrice,
-        gstRate: Number.isFinite(Number(input.gstRate))
-          ? Math.max(0, Number(input.gstRate))
-          : 5,
+        unitPrice: variant.price,
+        gstRate: item.gstRate,
       });
       return;
     }
 
-    const item = byId.get(String(input.productId));
-    if (!item || !item.billable) {
-      throw Object.assign(
-        new Error(`"${input.name || input.productId}" is not available for billing.`),
-        { statusCode: 400 },
-      );
-    }
+    const unitPrice = round2(input.unitPrice);
 
-    const variant =
-      item.variants.find((entry) => entry.key === String(input.variantKey || "")) ||
-      (item.variants.length === 1 ? item.variants[0] : null);
-    if (!variant) {
-      throw Object.assign(new Error(`Pick a size for "${item.name}".`), {
-        statusCode: 400,
+    if (input.categoryId) {
+      const category = categoriesById.get(String(input.categoryId));
+      if (!category) {
+        throw fail("That category no longer exists.");
+      }
+      if (!(unitPrice > 0)) {
+        throw fail(`Enter an amount for "${category.name}".`);
+      }
+
+      /* An open line: a named item at any price, billed under this category's
+       * HSN code and GST rate. Used for an item typed in by hand, and for
+       * the gap-filler line auto billing adds when prices cannot make an
+       * amount. Not limited to the category's fixed values or range. */
+      if (input.open) {
+        const openName = String(input.name || category.name).trim();
+        lines.push({
+          productId: "",
+          categoryId: category.id,
+          name: (openName || category.name).slice(0, 120),
+          variant: "",
+          category: category.name,
+          hsnCode: category.hsnCode,
+          qty,
+          unitPrice,
+          gstRate: category.gstRate,
+        });
+        return;
+      }
+
+      if (strictValues && !isAllowedValue(category, unitPrice)) {
+        throw fail(
+          `₹${unitPrice} is not one of the amounts allowed for "${category.name}".`,
+        );
+      }
+
+      lines.push({
+        productId: "",
+        categoryId: category.id,
+        name: category.name,
+        variant: "",
+        category: category.name,
+        hsnCode: category.hsnCode,
+        qty,
+        unitPrice,
+        gstRate: category.gstRate,
       });
+      return;
     }
 
+    const name = String(input.name || "").trim();
+    if (!name || !(unitPrice > 0)) {
+      throw fail("A custom item needs a name and a price.");
+    }
     lines.push({
-      productId: item.id,
-      name: item.name,
-      variant: variant.label,
-      category: item.category,
-      hsnCode: item.hsnCode,
+      productId: "",
+      categoryId: "",
+      name: name.slice(0, 120),
+      variant: "",
+      category: UNCATEGORISED,
+      hsnCode: "",
       qty,
-      unitPrice: variant.price,
-      gstRate: item.gstRate,
+      unitPrice,
+      gstRate: Number.isFinite(Number(input.gstRate))
+        ? Math.max(0, Number(input.gstRate))
+        : 5,
     });
   });
 
   if (!lines.length) {
-    throw Object.assign(new Error("Add at least one item to the bill."), {
-      statusCode: 400,
-    });
+    throw fail("Add at least one item to the bill.");
   }
 
   return lines;
@@ -243,14 +412,22 @@ const summarisePaymentMode = (payments) => {
 
 module.exports = {
   PAYMENT_MODES,
+  UNCATEGORISED,
   round2,
+  fail,
   dateKeyOf,
   isDateKey,
   isTime,
   istDate,
   shiftDateKey,
+  toCategory,
+  loadCategories,
+  isValueCategory,
+  valueCandidates,
+  isAllowedValue,
   loadCatalog,
   toCatalogItem,
+  indexCategoriesByProduct,
   resolveLines,
   computeBill,
   reserveBillNumbers,

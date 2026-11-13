@@ -14,6 +14,8 @@ const mongoose = require("mongoose");
 const billLineSchema = new mongoose.Schema(
   {
     productId: { type: String, default: "" },
+    // Billing category the line was sold under (empty for a custom line).
+    categoryId: { type: String, default: "" },
     name: { type: String, required: true, trim: true },
     variant: { type: String, trim: true, default: "" },
     category: { type: String, trim: true, default: "" },
