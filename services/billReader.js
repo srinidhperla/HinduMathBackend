@@ -241,7 +241,7 @@ const BILL_SCHEMA = {
         additionalProperties: false,
         required: [
           "sr", "printedName", "name", "hsnCode", "qty", "freeQty", "unit", "packSize",
-          "mrp", "sellingPrice", "rate", "rateIncludesGst", "discountPercent", "discountAmount",
+          "mrp", "sellingPrice", "rateExGst", "rateIncGst", "discountPercent", "discountAmount",
           "taxable", "gstRate", "gstAmount", "amount", "category",
         ],
         properties: {
@@ -255,8 +255,8 @@ const BILL_SCHEMA = {
           packSize: num,
           mrp: num,
           sellingPrice: num,
-          rate: num,
-          rateIncludesGst: { type: "boolean" },
+          rateExGst: num,
+          rateIncGst: num,
           discountPercent: num,
           discountAmount: num,
           taxable: num,
@@ -298,7 +298,9 @@ const instructions = ({ shop, categories, shortNames }) =>
     "- unit: PCS, BOX, PKT, NOS, DISPLAY, POUCH, HANGER … as printed. packSize: pieces per unit when the name shows it (T24, 24x, 24(30x18.5g) → 24), else null.",
     "- mrp: MRP per billed unit. Take it from an MRP column; if there is none but the description shows it ('RS.45', 'MRP 1200/-', 'TICTAC MINT 20/-', '20/-  MRP 240'), use the price that matches the billed unit (the pack's MRP for a pack, e.g. MRP 240 for a hanger of 12 × 20/-). Null if not shown.",
     "- sellingPrice: only if the bill prints a separate retail selling price for the shop (not the supplier's rate), else null.",
-    "- rate: the per-unit price column used to bill the line. rateIncludesGst: true when that column is marked 'Incl. of Tax' / inclusive, or is a dealer/MRP-style price from which the pre-tax rate is worked out. If the bill prints both an inclusive and an exclusive rate, give the EXCLUSIVE one with rateIncludesGst false (e.g. 'D.Price' or 'Rate (Incl. of Tax)' is inclusive; 'S.Rate', 'Rate', 'Price/Unit' beside it is usually exclusive — check: exclusive × (1 + GST%) ≈ inclusive).",
+    "- rateExGst: the per-unit rate BEFORE GST, if the bill prints one ('S.Rate', 'Rate', 'Basic Rate', 'Price/Unit', 'Rate' next to an 'Incl. of Tax' rate). Null if not printed.",
+    "- rateIncGst: the per-unit price INCLUDING GST, if the bill prints one ('D.Price', 'Rate (Incl. of Tax)', 'Landing price'). Null if not printed.",
+    "- When both rate columns are printed, copy BOTH exactly, digit by digit; they must satisfy rateExGst × (1 + GST%) ≈ rateIncGst. Never copy the MRP into a rate.",
     "- discountPercent and discountAmount: the line's discount as printed (Disc %, Disc Amt, scheme, CD/RD, 'Disc+GST benefit' deductions). Null when not printed.",
     "- taxable: the line's taxable value as printed (after discount, before GST). Null if the bill doesn't print it.",
     "- gstRate: TOTAL GST % for the line (CGST 2.5 + SGST 2.5 = 5; '40.0' = 40). Use the bill's tax summary if lines don't show it.",
@@ -357,7 +359,13 @@ const lineReadings = (line, fallbackGst) => {
   const gstRate = resolveGstRate(line, fallbackGst);
   const qty = Number(line.qty) > 0 ? Number(line.qty) : 1;
   const factor = 1 + gstRate / 100;
-  const printedRate = Number(line.rate) || 0;
+  // The bill may print a rate before GST (S.Rate, Rate, Price/Unit), a rate
+  // with GST (D.Price, Rate Incl. of Tax), or both. Older readings had one
+  // `rate` with a flag saying which it was.
+  const exRate =
+    Number(line.rateExGst) > 0 ? Number(line.rateExGst) : !line.rateIncludesGst && Number(line.rate) > 0 ? Number(line.rate) : 0;
+  const incRate =
+    Number(line.rateIncGst) > 0 ? Number(line.rateIncGst) : line.rateIncludesGst && Number(line.rate) > 0 ? Number(line.rate) : 0;
   const amount = Number(line.amount) || 0;
   const gstAmount = Number(line.gstAmount) || 0;
   const discountFor = (gross) =>
@@ -366,14 +374,12 @@ const lineReadings = (line, fallbackGst) => {
       : Number(line.discountPercent) > 0
         ? (gross * Number(line.discountPercent)) / 100
         : 0;
-  const fromRate = (includesGst) => {
-    if (!(printedRate > 0)) return null;
-    const base = includesGst && gstRate ? printedRate / factor : printedRate;
-    const gross = qty * base;
-    return { taxable: gross - discountFor(gross), rate: base };
-  };
-  const asRead = fromRate(Boolean(line.rateIncludesGst));
-  const flipped = gstRate ? fromRate(!line.rateIncludesGst) : null;
+  // Before-GST rate: the line's discount comes off it. With-GST rate: it is
+  // usually the final cost per unit, after discount and tax.
+  const asRead =
+    exRate > 0 ? { rate: exRate, taxable: qty * exRate - discountFor(qty * exRate) } : null;
+  const flipped =
+    incRate > 0 ? { rate: incRate / factor, taxable: (qty * incRate) / factor } : null;
 
   const readings = {
     printed: Number(line.taxable) > 0 ? Number(line.taxable) : null,

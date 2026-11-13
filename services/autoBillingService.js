@@ -24,6 +24,9 @@ const { isValueCategory, valueCandidates, fail } = require("./billingService");
  *      and for cash bills a few rupees are shifted from one bill to another —
  *      until every bill can be completed. A bill that still cannot be made
  *      is returned flagged, never silently adjusted.
+ *   5. Stock items (bought on purchase bills) are used only as far as their
+ *      stock goes: a tracker counts what each bill takes, and an item that
+ *      runs out is no longer picked. Items with no stock are left out.
  * ────────────────────────────────────────────────────────────────────────── */
 
 const MAX_BILL_AMOUNT = 50000;
@@ -66,6 +69,8 @@ const buildUnits = (catalog, categories) => {
 
   catalog.forEach((item) => {
     if (!item.billable) return;
+    // Nothing in stock: auto bills can't sell it.
+    if (item.kind === "stock" && !(item.stock?.qty > 0)) return;
     item.variants.forEach((variant) => {
       const price = Number(variant.price);
       if (!Number.isInteger(price) || price <= 0) return;
@@ -86,6 +91,9 @@ const buildUnits = (catalog, categories) => {
         variant: variant.label,
         price,
         weight,
+        ...(item.kind === "stock"
+          ? { stockItemId: item.stock.itemId, stockQty: Number(variant.stockQty) || 1 }
+          : {}),
       });
     });
   });
@@ -110,6 +118,34 @@ const buildUnits = (catalog, categories) => {
   return units;
 };
 
+/* How much of each stock item is left while a plan is built. Units that
+ * aren't stock items are unlimited. */
+const makeStockTracker = (catalog) => {
+  const initial = new Map();
+  catalog.forEach((item) => {
+    if (item.kind === "stock" && item.stock?.qty > 0) initial.set(item.stock.itemId, item.stock.qty);
+  });
+  let left = new Map(initial);
+  const EPSILON = 1e-9;
+  return {
+    canTake: (unit, copies = 1) =>
+      !unit.stockItemId || (left.get(unit.stockItemId) || 0) + EPSILON >= unit.stockQty * copies,
+    take: (unit, copies = 1) => {
+      if (unit.stockItemId) left.set(unit.stockItemId, (left.get(unit.stockItemId) || 0) - unit.stockQty * copies);
+    },
+    snapshot: () => new Map(left),
+    restore: (state) => {
+      left = new Map(state);
+    },
+    used: () =>
+      [...initial.entries()].map(([itemId, start]) => ({
+        itemId,
+        start,
+        used: Math.round((start - (left.get(itemId) || 0)) * 10000) / 10000,
+      })),
+  };
+};
+
 /* reach[v] === 1 when some multiset of `prices` adds up to exactly v. */
 const reachTable = (prices, limit) => {
   const unique = [...new Set(prices)].sort((left, right) => left - right);
@@ -130,7 +166,7 @@ const reachTable = (prices, limit) => {
 
 /* Picks units adding up to exactly `amount` (which must be reachable).
  * Returns a flat list, one entry per unit sold. */
-const pickExact = (amount, pool, reach, { plannedLines, maxQty }) => {
+const pickExact = (amount, pool, reach, { plannedLines, maxQty, stock }) => {
   const quantities = new Map();
   const picked = [];
   let remaining = amount;
@@ -138,8 +174,13 @@ const pickExact = (amount, pool, reach, { plannedLines, maxQty }) => {
 
   while (remaining > 0) {
     const fits = pool.filter(
-      (unit) => unit.price <= remaining && reach[remaining - unit.price],
+      (unit) =>
+        unit.price <= remaining &&
+        reach[remaining - unit.price] &&
+        (!stock || stock.canTake(unit)),
     );
+    // Only sold-out stock items would fit: stop, and the bill shows short.
+    if (!fits.length) break;
     const underCap = fits.filter(
       (unit) => (quantities.get(unit.id) || 0) < maxQty,
     );
@@ -156,6 +197,7 @@ const pickExact = (amount, pool, reach, { plannedLines, maxQty }) => {
     );
 
     const choice = weightedPick(candidates, weights);
+    if (stock) stock.take(choice);
     quantities.set(choice.id, (quantities.get(choice.id) || 0) + 1);
     picked.push(choice);
     remaining -= choice.price;
@@ -234,7 +276,7 @@ const randomTime = (startTime, endTime) => {
 /* Units of one category adding up to `target`, or to the closest amount its
  * prices allow (looking below the target first, so the day never overshoots
  * by more than it has to). */
-const composeCategory = (target, categoryUnits) => {
+const composeCategory = (target, categoryUnits, stock) => {
   const minPrice = Math.min(...categoryUnits.map((unit) => unit.price));
   const limit = target + minPrice;
   const reach = reachTable(
@@ -260,13 +302,13 @@ const composeCategory = (target, categoryUnits) => {
     .sort((left, right) => left - right);
   const median = prices[Math.floor(prices.length / 2)];
 
-  return {
-    amount,
-    units: pickExact(amount, categoryUnits, reach, {
-      plannedLines: Math.max(1, Math.round(amount / median)),
-      maxQty: Infinity,
-    }),
-  };
+  const units = pickExact(amount, categoryUnits, reach, {
+    plannedLines: Math.max(1, Math.round(amount / median)),
+    maxQty: Infinity,
+    stock,
+  });
+  // Less than planned when a stock item ran out part way.
+  return { amount: units.reduce((sum, unit) => sum + unit.price, 0), units };
 };
 
 /* ── Placement ──────────────────────────────────────────────────────────── */
@@ -477,6 +519,7 @@ const generatePlan = ({
   }
 
   const units = buildUnits(catalog, categories);
+  const stock = makeStockTracker(catalog);
   if (!units.length) {
     throw fail("There are no billing items or category amounts to bill with.");
   }
@@ -579,7 +622,7 @@ const generatePlan = ({
         const options = [];
         budgeted.forEach((budget) => {
           budget.units.forEach((unit) => {
-            if (unit.price <= amount && unit.price <= budget.remaining) {
+            if (unit.price <= amount && unit.price <= budget.remaining && stock.canTake(unit)) {
               options.push({ unit, budget });
             }
           });
@@ -594,10 +637,12 @@ const generatePlan = ({
           const fits = options.filter(
             ({ unit, budget }) =>
               unit.price * copies <= budget.remaining &&
+              stock.canTake(unit, copies) &&
               completes(amount - unit.price * copies),
           );
           if (fits.length) {
             const { unit, budget } = fits[randomInt(0, fits.length - 1)];
+            stock.take(unit, copies);
             for (let copy = 0; copy < copies; copy += 1) {
               bill.units.push({ ...unit, locked: true });
             }
@@ -619,8 +664,13 @@ const generatePlan = ({
             ) {
               continue;
             }
-            if (completes(rest)) {
+            const pairOk =
+              first.unit.stockItemId && first.unit.stockItemId === second.unit.stockItemId
+                ? stock.canTake(first.unit, 2)
+                : stock.canTake(first.unit) && stock.canTake(second.unit);
+            if (completes(rest) && pairOk) {
               [first, second].forEach(({ unit, budget }) => {
+                stock.take(unit);
                 bill.units.push({ ...unit, locked: true });
                 budget.remaining -= unit.price;
                 budget.locked += unit.price;
@@ -632,6 +682,8 @@ const generatePlan = ({
       });
   };
   lockUnitsForHardBills();
+  // Stock left after the locked units; each attempt below starts from here.
+  const stockAfterLocks = stock.snapshot();
 
   /* 4. Units making up the rest of each category amount. Which sizes a
    *    category is made of decides whether every bill can be completed (one
@@ -648,7 +700,7 @@ const generatePlan = ({
     budgets.forEach((budget) => {
       const composed =
         budget.remaining > 0
-          ? composeCategory(budget.remaining, budget.units)
+          ? composeCategory(budget.remaining, budget.units, stock)
           : { amount: 0, units: [] };
       mustUse = mustUse.concat(composed.units);
       summaries.push({
@@ -666,6 +718,7 @@ const generatePlan = ({
   /* 5. Deal the must-use units, then repair until every bill can be made. */
   let best = null;
   for (let attempt = 0; attempt < 60; attempt += 1) {
+    stock.restore(stockAfterLocks);
     const composed = composeTargets();
     if (composed.total > dayTotal) continue;
 
@@ -680,7 +733,7 @@ const generatePlan = ({
 
     const badCount = working.filter((bill) => !planner.isGood(bill)).length;
     if (!best || badCount < best.badCount) {
-      best = { bills: working, badCount, summaries: composed.summaries };
+      best = { bills: working, badCount, summaries: composed.summaries, stock: stock.snapshot() };
     }
     if (badCount === 0) break;
   }
@@ -691,6 +744,8 @@ const generatePlan = ({
     );
   }
   const targetSummaries = best.summaries;
+  // Fill the bills from the stock left by the chosen attempt.
+  stock.restore(best.stock);
 
   /* 6. Fill what is missing on each bill from the other categories. A bill
    *    whose amount the prices cannot make (₹20 when the cheapest item is
@@ -727,7 +782,7 @@ const generatePlan = ({
     }
     const items =
       itemsPart > 0
-        ? pickExact(itemsPart, freePool, freeReach, { plannedLines, maxQty })
+        ? pickExact(itemsPart, freePool, freeReach, { plannedLines, maxQty, stock })
         : [];
     const leftover = Math.round((gap - Math.max(0, itemsPart)) * 100) / 100;
     return [
@@ -756,7 +811,7 @@ const generatePlan = ({
       );
       let filler = [];
       if (completable && gap > 0) {
-        filler = pickExact(gap, freePool, freeReach, { plannedLines, maxQty });
+        filler = pickExact(gap, freePool, freeReach, { plannedLines, maxQty, stock });
       } else if (!completable && gap > 0 && gapCategory) {
         filler = fillWithGapLine(gap, plannedLines);
         gapFilled += 1;
@@ -811,6 +866,23 @@ const generatePlan = ({
         amount,
       }))
       .sort((left, right) => right.amount - left.amount),
+    // Stock items these bills take off stock, and what will be left.
+    stockUsed: (() => {
+      const byId = new Map(
+        catalog.filter((item) => item.kind === "stock").map((item) => [item.stock.itemId, item]),
+      );
+      return stock
+        .used()
+        .filter((entry) => entry.used > 0)
+        .map((entry) => ({
+          itemId: entry.itemId,
+          name: byId.get(entry.itemId)?.name || "",
+          baseUnit: byId.get(entry.itemId)?.stock.baseUnit || "pcs",
+          used: entry.used,
+          left: Math.round((entry.start - entry.used) * 10000) / 10000,
+        }))
+        .sort((left, right) => right.used - left.used);
+    })(),
   };
 };
 

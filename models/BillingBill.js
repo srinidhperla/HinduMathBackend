@@ -27,6 +27,10 @@ const billLineSchema = new mongoose.Schema(
     taxableValue: { type: Number, default: 0 },
     cgst: { type: Number, default: 0 },
     sgst: { type: Number, default: 0 },
+    // For a stock item (bought on purchase bills): which one, and how much
+    // of its stock unit (pcs / kg / litre) this line took off stock.
+    stockItemId: { type: String, default: "" },
+    stockQty: { type: Number, default: 0 },
   },
   { _id: false },
 );

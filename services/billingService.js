@@ -1,6 +1,7 @@
 const Product = require("../models/Product");
 const Counter = require("../models/Counter");
 const BillingCategory = require("../models/BillingCategory");
+const StockItem = require("../models/BillingStockItem");
 
 /* Shared helpers for the counter-billing module (/api/billing):
  *   - IST date handling (the shop's day, not the server's)
@@ -77,17 +78,32 @@ const fitsRangeRounding = (category, value) => {
   return step <= 1 || Math.abs(value / step - Math.round(value / step)) < 1e-6;
 };
 
+// Stock items that can be sold (they have at least one selling option).
+const SELLABLE_STOCK = { "sellOptions.0": { $exists: true } };
+
 const loadCategories = async () => {
-  const categories = await BillingCategory.find({})
-    .sort({ sortOrder: 1, name: 1 })
-    .lean();
-  return categories.map(toCategory);
+  const [categories, stockCounts] = await Promise.all([
+    BillingCategory.find({}).sort({ sortOrder: 1, name: 1 }).lean(),
+    StockItem.aggregate([
+      { $match: { ...SELLABLE_STOCK, categoryId: { $ne: "" } } },
+      { $group: { _id: "$categoryId", count: { $sum: 1 } } },
+    ]),
+  ]);
+  const countById = new Map(stockCounts.map((entry) => [entry._id, entry.count]));
+  return categories.map((category) => ({
+    ...toCategory(category),
+    // Stock items (from purchase bills) sold under this category.
+    stockItemCount: countById.get(String(category._id)) || 0,
+  }));
 };
 
 /* A category with no items is billed as a single line named after it, priced
- * from its fixed values or range. */
+ * from its fixed values or range. Once it has stock items, those are sold
+ * instead and the amount line is no longer used. */
 const isValueCategory = (category) =>
-  category.productIds.length === 0 && category.valueMode !== "none";
+  category.productIds.length === 0 &&
+  !category.stockItemCount &&
+  category.valueMode !== "none";
 
 /* Every amount a value category may be billed at. Capped so a wide range
  * with a small step cannot produce an enormous list. */
@@ -210,13 +226,56 @@ const indexCategoriesByProduct = (categories) => {
   return byProductId;
 };
 
+/* A stock item (bought on purchase bills) as a catalog item: each selling
+ * option is a size — "1 pc ₹50", "Box (24) ₹1,000", "250 g ₹60". Its id is
+ * "stock:<id>" so it never clashes with a website product. */
+const STOCK_PREFIX = "stock:";
+
+const toStockCatalogItem = (stock, categoriesById) => {
+  const category = categoriesById.get(stock.categoryId) || null;
+  const options = stock.sellOptions || [];
+  return {
+    id: `${STOCK_PREFIX}${stock._id}`,
+    kind: "stock",
+    name: stock.name,
+    category: "Stock",
+    billingCategoryId: category ? category.id : "",
+    billingCategory: category ? category.name : "",
+    image: "",
+    price: options[0] ? Number(options[0].price) : 0,
+    gstRate: category ? category.gstRate : Number(stock.gstRate || 0),
+    hsnCode: stock.hsnCode || (category ? category.hsnCode : ""),
+    isAddon: false,
+    hasVariants: options.length > 1,
+    variants: options.map((option) => ({
+      key: String(option.qty),
+      label: option.label,
+      price: Number(option.price),
+      // Stock units (pcs / kg / litre) one of this size takes off stock.
+      stockQty: Number(option.qty),
+    })),
+    stock: {
+      itemId: String(stock._id),
+      qty: Number(stock.stockQty || 0),
+      baseUnit: stock.baseUnit || "pcs",
+    },
+    billable: options.length > 0,
+    showOnWebsite: false,
+  };
+};
+
 const loadCatalog = async (categories) => {
-  const [products, billingCategories] = await Promise.all([
+  const [products, billingCategories, stockItems] = await Promise.all([
     Product.find({}).sort({ category: 1, displayOrder: 1, name: 1 }).lean(),
     categories ? Promise.resolve(categories) : loadCategories(),
+    StockItem.find(SELLABLE_STOCK).sort({ name: 1 }).lean(),
   ]);
   const byProductId = indexCategoriesByProduct(billingCategories);
-  return products.map((product) => toCatalogItem(product, byProductId));
+  const categoriesById = new Map(billingCategories.map((category) => [category.id, category]));
+  return [
+    ...products.map((product) => toCatalogItem(product, byProductId)),
+    ...stockItems.map((stock) => toStockCatalogItem(stock, categoriesById)),
+  ];
 };
 
 /* Turns client lines into priced bill lines. Three kinds of line:
@@ -263,12 +322,20 @@ const resolveLines = (
         productId: item.id,
         categoryId: item.billingCategoryId,
         name: item.name,
-        variant: variant.label,
+        // A stock item with one way of selling needs no size on the bill.
+        variant: item.kind === "stock" && !item.hasVariants ? "" : variant.label,
         category: item.billingCategory || UNCATEGORISED,
         hsnCode: item.hsnCode,
         qty,
         unitPrice: variant.price,
         gstRate: item.gstRate,
+        // What this line takes off stock, in the item's stock unit.
+        ...(item.kind === "stock"
+          ? {
+              stockItemId: item.stock.itemId,
+              stockQty: Math.round(qty * variant.stockQty * 10000) / 10000,
+            }
+          : {}),
       });
       return;
     }
@@ -435,6 +502,7 @@ module.exports = {
   loadCatalog,
   toCatalogItem,
   indexCategoriesByProduct,
+  STOCK_PREFIX,
   resolveLines,
   computeBill,
   reserveBillNumbers,

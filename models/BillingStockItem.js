@@ -54,6 +54,13 @@ const stockItemSchema = new mongoose.Schema(
     lastPurchasedOn: { type: String, default: "" },
     stockQty: { type: Number, default: 0 },
     purchasedQty: { type: Number, default: 0 },
+    // Taken off by counter and auto bills (net of cancelled bills).
+    soldQty: { type: Number, default: 0 },
+    // Net change from stock counts (counted − expected), see adjustments.
+    adjustedQty: { type: Number, default: 0 },
+    // Shown as "Low" at or below this (base units). Null = one box, or a
+    // fifth of what was bought, whichever the item has.
+    reorderLevel: { type: Number, default: null },
   },
   { collection: "billing_stock_items", timestamps: true },
 );

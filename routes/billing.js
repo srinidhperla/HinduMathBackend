@@ -75,6 +75,8 @@ router.delete("/purchases/learned-items/:id", isBillingManager, purchases.delete
 // Stock items: what purchases have added
 router.get("/purchases/stock", isBillingManager, purchases.listStock);
 router.patch("/purchases/stock/:id", isBillingManager, purchases.updateStock);
+router.post("/purchases/stock/:id/adjust", isBillingManager, purchases.adjustStock);
+router.get("/purchases/stock/:id/history", isBillingManager, purchases.stockHistory);
 router.get("/purchases/:id", isBillingManager, purchases.getPurchase);
 router.post("/purchases", isBillingManager, purchases.createPurchase);
 router.patch("/purchases/:id", isBillingManager, purchases.updatePurchase);

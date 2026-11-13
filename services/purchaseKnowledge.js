@@ -105,7 +105,7 @@ const stockQtyOf = (line) =>
 // A line's billed unit as a pack of the item, when it holds several.
 const packFromLine = (line) =>
   Number(line.unitFactor) > 1 && line.unit && line.unit.toLowerCase() !== (line.baseUnit || "pcs")
-    ? { name: line.unit.charAt(0).toUpperCase() + line.unit.slice(1), factor: round(line.unitFactor) }
+    ? { name: "Box", factor: round(line.unitFactor) }
     : null;
 
 const perBase = (value, line) =>

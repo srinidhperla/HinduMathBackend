@@ -29,6 +29,7 @@ const {
   reserveBillNumbers,
   summarisePaymentMode,
 } = require("../services/billingService");
+const { moveStockForBills } = require("../services/stockMoves");
 const {
   generatePlan,
   MAX_BILL_AMOUNT,
@@ -339,6 +340,8 @@ const createBill = async (req, res) => {
       createdById: req.user.id,
       createdByName: req.user.name || "",
     });
+    // Stock items on the bill come off stock (it may go below zero).
+    await moveStockForBills([bill], -1);
 
     return res.status(201).json({ bill: toBill(bill.toObject()) });
   } catch (error) {
@@ -434,6 +437,8 @@ const cancelBill = async (req, res) => {
     if (!bill) {
       return res.status(404).json({ message: "Bill not found or already cancelled." });
     }
+    // A cancelled sale puts its stock items back.
+    await moveStockForBills([bill], 1);
     return res.json({ bill: toBill(bill) });
   } catch (error) {
     return fail(res, error, "Error cancelling bill");
@@ -1100,6 +1105,7 @@ const commitAutoBills = async (req, res) => {
     }));
 
     await BillingBill.insertMany(documents);
+    await moveStockForBills(documents, -1);
 
     logger.info("Auto billing committed", {
       date,
@@ -1128,8 +1134,12 @@ const cancelAutoBatch = async (req, res) => {
       throw badRequest("Unknown auto-billing run.");
     }
 
+    // The bills being reversed, so their stock items can go back on stock.
+    const reversing = await BillingBill.find({ autoBatchId, status: "active" })
+      .select("_id items.stockItemId items.stockQty")
+      .lean();
     const result = await BillingBill.updateMany(
-      { autoBatchId, status: "active" },
+      { _id: { $in: reversing.map((bill) => bill._id) }, status: "active" },
       {
         $set: {
           status: "cancelled",
@@ -1140,6 +1150,7 @@ const cancelAutoBatch = async (req, res) => {
       },
     );
 
+    await moveStockForBills(reversing, 1);
     return res.json({ cancelled: result.modifiedCount || 0 });
   } catch (error) {
     return fail(res, error, "Error reversing auto-billing run");

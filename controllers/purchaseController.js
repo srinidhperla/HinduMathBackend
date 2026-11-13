@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const BillingPurchase = require("../models/BillingPurchase");
 const logger = require("../utils/logger");
-const { isDateKey, loadCategories } = require("../services/billingService");
+const { isDateKey, loadCategories, dateKeyOf } = require("../services/billingService");
 const {
   round2,
   computePurchase,
@@ -21,6 +21,8 @@ const {
 } = require("../services/purchaseKnowledge");
 const { PurchaseItem, ShortName } = require("../models/BillingPurchaseKnowledge");
 const StockItem = require("../models/BillingStockItem");
+const StockAdjustment = require("../models/BillingStockAdjustment");
+const BillingBill = require("../models/BillingBill");
 const { BASE_UNITS, packUnitsOf, parseSellOptions } = require("../services/stockUnits");
 
 /* Purchases — supplier bills entered by hand or read from an uploaded file,
@@ -97,7 +99,8 @@ const parsePurchaseBody = (body, categories) => {
       category: category?.name || "",
       qty,
       unit: text(line.unit, 20),
-      rate: round2(number(line.rate, `${label} rate`)),
+      // Kept to 4 decimals: supplier rates like ₹72.857 must stay exact.
+      rate: Math.round(number(line.rate, `${label} rate`) * 10000) / 10000,
       discount: round2(number(line.discount || 0, `${label} discount`)),
       gstRate,
     };
@@ -575,28 +578,68 @@ const deleteLearnedItem = async (req, res) => {
 
 /* ── Stock ────────────────────────────────────────────────────────────── */
 
-const toStockItem = (item) => ({
-  id: String(item._id),
-  name: item.name,
-  categoryId: item.categoryId,
-  hsnCode: item.hsnCode,
-  gstRate: item.gstRate,
-  baseUnit: item.baseUnit || "pcs",
-  packUnits: packUnitsOf(item),
-  sellOptions: item.sellOptions || [],
-  unit: item.unit,
-  packSize: item.packSize,
-  mrp: item.mrp,
-  sellingPrice: item.sellingPrice,
-  lastRate: item.lastRate,
-  lastSupplier: item.lastSupplier,
-  lastPurchasedOn: item.lastPurchasedOn,
-  stockQty: round2(item.stockQty),
-  purchasedQty: round2(item.purchasedQty),
-});
+// Where "Low" starts: the level set on the item, else one box, else a
+// fifth of what has been bought.
+const lowLevelOf = (item) => {
+  if (item.reorderLevel !== null && item.reorderLevel !== undefined) return Number(item.reorderLevel);
+  const packs = packUnitsOf(item);
+  if (packs.length) return Math.min(...packs.map((pack) => pack.factor));
+  return round2((Number(item.purchasedQty) || 0) / 5);
+};
 
-/* GET /purchases/stock?q — every stock item, for the Stock view and for
- * linking bill lines to an existing item in the editor. */
+// Price of one stock unit when sold: the cheapest-per-unit selling option,
+// else the MRP.
+const sellPerBaseOf = (item) => {
+  const perUnit = (item.sellOptions || [])
+    .filter((option) => option.qty > 0 && option.price > 0)
+    .map((option) => option.price / option.qty);
+  if (perUnit.length) return Math.max(...perUnit);
+  return Number(item.mrp) > 0 ? Number(item.mrp) : null;
+};
+
+const toStockItem = (item) => {
+  const stockQty = round2(item.stockQty);
+  const lowAt = lowLevelOf(item);
+  const sellPerBase = sellPerBaseOf(item);
+  const lastRate = item.lastRate ?? null;
+  return {
+    id: String(item._id),
+    name: item.name,
+    categoryId: item.categoryId,
+    hsnCode: item.hsnCode,
+    gstRate: item.gstRate,
+    baseUnit: item.baseUnit || "pcs",
+    packUnits: packUnitsOf(item),
+    sellOptions: item.sellOptions || [],
+    unit: item.unit,
+    packSize: item.packSize,
+    mrp: item.mrp,
+    sellingPrice: item.sellingPrice,
+    lastRate,
+    lastSupplier: item.lastSupplier,
+    lastPurchasedOn: item.lastPurchasedOn,
+    stockQty,
+    purchasedQty: round2(item.purchasedQty),
+    soldQty: round2(item.soldQty),
+    adjustedQty: round2(item.adjustedQty),
+    reorderLevel: item.reorderLevel ?? null,
+    lowAt,
+    status: stockQty < 0 ? "negative" : stockQty === 0 ? "out" : stockQty <= lowAt ? "low" : "ok",
+    sellPerBase: sellPerBase !== null ? round2(sellPerBase) : null,
+    // Value of what is on the shelf: at the last purchase rate (before GST)
+    // and at the shop's selling price.
+    costValue: lastRate !== null ? round2(Math.max(0, stockQty) * lastRate) : 0,
+    sellValue: sellPerBase !== null ? round2(Math.max(0, stockQty) * sellPerBase) : 0,
+    // Margin of the selling price over the purchase rate with GST.
+    marginPercent:
+      sellPerBase && lastRate
+        ? round2(((sellPerBase - lastRate * (1 + (item.gstRate || 0) / 100)) / sellPerBase) * 100)
+        : null,
+  };
+};
+
+/* GET /purchases/stock?q — every stock item, for the Stock page and for
+ * linking bill lines to an existing item in the purchase editor. */
 const listStock = async (req, res) => {
   try {
     const term = text(req.query.q, 60);
@@ -608,8 +651,8 @@ const listStock = async (req, res) => {
   }
 };
 
-/* PATCH /purchases/stock/:id — name, category, MRP, selling price, pack
- * size, or a counted stock quantity (stock check). */
+/* PATCH /purchases/stock/:id — name, category, MRP, selling options, low
+ * stock level, units. Stock quantity changes go through /adjust. */
 const updateStock = async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) throw badRequest("Unknown stock item.");
@@ -631,7 +674,7 @@ const updateStock = async (req, res) => {
     optionalNumber("mrp", "MRP");
     optionalNumber("sellingPrice", "Selling price");
     optionalNumber("packSize", "Pack size");
-    if (body.stockQty !== undefined) update.stockQty = Number(body.stockQty) || 0;
+    optionalNumber("reorderLevel", "Low stock level");
     const current = await StockItem.findById(req.params.id).lean();
     if (!current) throw Object.assign(new Error("Stock item not found."), { statusCode: 404 });
     if (body.baseUnit !== undefined) {
@@ -643,8 +686,8 @@ const updateStock = async (req, res) => {
     }
     if (body.packUnits !== undefined) {
       update.packUnits = (Array.isArray(body.packUnits) ? body.packUnits : [])
-        .map((entry) => ({ name: text(entry?.name, 30), factor: Number(entry?.factor) }))
-        .filter((entry) => entry.name && entry.factor > 0)
+        .map((entry) => ({ name: "Box", factor: Number(entry?.factor) }))
+        .filter((entry) => entry.factor > 0)
         .slice(0, 10);
     }
     if (body.sellOptions !== undefined) {
@@ -652,16 +695,125 @@ const updateStock = async (req, res) => {
       update.sellOptions = parseSellOptions(body.sellOptions, baseUnit, update.packUnits || packUnitsOf(current));
     }
     const item = await StockItem.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).lean();
-    if (!item) throw Object.assign(new Error("Stock item not found."), { statusCode: 404 });
     return res.json({ item: toStockItem(item) });
   } catch (error) {
     return fail(res, error, "Could not update the stock item.");
   }
 };
 
+/* POST /purchases/stock/:id/adjust — a stock count: set the stock to what
+ * was counted on the shelf, with a reason, and keep a record of it. */
+const adjustStock = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw badRequest("Unknown stock item.");
+    const counted = Number(req.body?.countedQty);
+    if (!Number.isFinite(counted) || counted < 0) throw badRequest("Enter the counted quantity (0 or more).");
+    const reason = text(req.body?.reason, 200);
+    if (!reason) throw badRequest("Give a reason, e.g. counted, damaged or expired.");
+    const item = await StockItem.findById(req.params.id).lean();
+    if (!item) throw Object.assign(new Error("Stock item not found."), { statusCode: 404 });
+
+    const countedQty = round2(counted);
+    const diff = round2(countedQty - (item.stockQty || 0));
+    // $inc by the difference, so a sale saved at the same moment isn't lost.
+    const updated = await StockItem.findByIdAndUpdate(
+      item._id,
+      { $inc: { stockQty: diff, adjustedQty: diff } },
+      { new: true },
+    ).lean();
+    await StockAdjustment.create({
+      stockItemId: String(item._id),
+      itemName: item.name,
+      expectedQty: round2(item.stockQty),
+      countedQty,
+      diff,
+      reason,
+      dateKey: isDateKey(req.body?.dateKey) ? req.body.dateKey : dateKeyOf(),
+      byId: req.user.id,
+      byName: req.user.name || "",
+    });
+    logger.info("Stock counted", { item: item.name, diff, by: req.user.name || req.user.id });
+    return res.json({ item: toStockItem(updated) });
+  } catch (error) {
+    return fail(res, error, "Could not adjust the stock.");
+  }
+};
+
+/* GET /purchases/stock/:id/history — every movement of one item, newest
+ * first: purchase bills (+), sale bills (−), stock counts (±). */
+const stockHistory = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw badRequest("Unknown stock item.");
+    const id = String(req.params.id);
+    const [purchases, bills, counts] = await Promise.all([
+      BillingPurchase.find({ "lines.stockItemId": id })
+        .select("supplierName invoiceNo dateKey lines createdAt")
+        .sort({ dateKey: -1 })
+        .limit(200)
+        .lean(),
+      BillingBill.find({ "items.stockItemId": id, status: "active" })
+        .select("billNo dateKey billDate source items")
+        .sort({ billDate: -1 })
+        .limit(300)
+        .lean(),
+      StockAdjustment.find({ stockItemId: id }).sort({ createdAt: -1 }).limit(100).lean(),
+    ]);
+
+    const moves = [];
+    purchases.forEach((purchase) => {
+      purchase.lines
+        .filter((line) => line.stockItemId === id)
+        .forEach((line) => {
+          const factor = Number(line.unitFactor) > 0 ? Number(line.unitFactor) : 1;
+          moves.push({
+            type: "purchase",
+            dateKey: purchase.dateKey,
+            at: purchase.createdAt,
+            qty: round2(((line.qty || 0) + (line.freeQty || 0)) * factor),
+            detail: `${purchase.supplierName}${purchase.invoiceNo ? ` · ${purchase.invoiceNo}` : ""}`,
+            // Older bills saved pack names (Display, Hanger …); all are Boxes.
+            note: `${line.qty}${line.freeQty ? ` + ${line.freeQty} free` : ""} ${
+              factor > 1 ? `Box (${factor})` : line.unit || ""
+            } at ₹${round2(line.rate)}`.trim(),
+            purchaseId: String(purchase._id),
+          });
+        });
+    });
+    bills.forEach((bill) => {
+      const qty = bill.items
+        .filter((line) => line.stockItemId === id)
+        .reduce((sum, line) => sum + (Number(line.stockQty) || 0), 0);
+      moves.push({
+        type: "sale",
+        dateKey: bill.dateKey,
+        at: bill.billDate,
+        qty: round2(-qty),
+        detail: `Bill ${bill.billNo}`,
+        note: bill.source === "auto" ? "Auto billing" : "Counter",
+      });
+    });
+    counts.forEach((count) => {
+      moves.push({
+        type: "count",
+        dateKey: count.dateKey,
+        at: count.createdAt,
+        qty: count.diff,
+        detail: `Counted ${count.countedQty} (expected ${count.expectedQty})`,
+        note: `${count.reason}${count.byName ? ` · ${count.byName}` : ""}`,
+      });
+    });
+    moves.sort((left, right) => new Date(right.at) - new Date(left.at));
+    return res.json({ moves });
+  } catch (error) {
+    return fail(res, error, "Could not load the item's history.");
+  }
+};
+
 module.exports = {
   listStock,
   updateStock,
+  adjustStock,
+  stockHistory,
   listPurchases,
   getPurchase,
   createPurchase,
