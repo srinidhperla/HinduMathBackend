@@ -587,6 +587,17 @@ const parseCategoryBody = (body, { partial = false } = {}) => {
     update.sortOrder = Number(body.sortOrder) || 0;
   }
 
+  if (body.hsnPrefixes !== undefined) {
+    const list = Array.isArray(body.hsnPrefixes)
+      ? body.hsnPrefixes
+      : String(body.hsnPrefixes || "").split(/[\s,;]+/);
+    const prefixes = [...new Set(list.map((code) => String(code).trim()).filter(Boolean))];
+    if (prefixes.some((code) => !/^\d{2,8}$/.test(code))) {
+      throw badRequest("Purchase HSN codes must be 2 to 8 digits each.");
+    }
+    update.hsnPrefixes = prefixes.slice(0, 40);
+  }
+
   if (body.productIds !== undefined) {
     update.productIds = [
       ...new Set(

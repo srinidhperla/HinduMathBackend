@@ -52,6 +52,13 @@ const toCategory = (category) => ({
   rangeMin: Number(category.rangeMin || 0),
   rangeMax: Number(category.rangeMax || 0),
   roundTo: Math.max(1, Number(category.roundTo || 1)),
+  hsnPrefixes: [
+    ...new Set(
+      (category.hsnPrefixes || [])
+        .map((code) => String(code).replace(/\D/g, ""))
+        .filter(Boolean),
+    ),
+  ],
   endDigits: [...new Set((category.endDigits || []).map(Number))]
     .filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9)
     .sort((left, right) => left - right),

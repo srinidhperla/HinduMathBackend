@@ -36,6 +36,9 @@ const billingCategorySchema = new mongoose.Schema(
     rangeMin: { type: Number, default: 0, min: 0 },
     rangeMax: { type: Number, default: 0, min: 0 },
     roundTo: { type: Number, default: 1, min: 1 },
+    // HSN codes (or their first digits) whose purchases belong here, e.g.
+    // ["190531", "190532"] for biscuits. Empty means just hsnCode.
+    hsnPrefixes: { type: [String], default: [] },
     // Allowed last digits for a range (0–9). Empty means any digit.
     endDigits: { type: [Number], default: [] },
   },
